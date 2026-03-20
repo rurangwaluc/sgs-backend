@@ -85,13 +85,6 @@
       "when": 1769699078984,
       "tag": "0011_hot_marrow",
       "breakpoints": true
-    },
-    {
-      "idx": 12,
-      "version": "7",
-      "when": 1773840000000,
-      "tag": "0012_bootstrap_locations_fix",
-      "breakpoints": true
     }
   ]
 }
