@@ -44,18 +44,25 @@ function mapOwnerInventoryRow(row) {
         ? row.is_active !== false
         : row.isActive !== false,
     qtyOnHand: Number(row.qtyOnHand ?? row.qty_on_hand ?? 0),
+    inventoryValue: Number(row.inventoryValue ?? row.inventory_value ?? 0),
     updatedAt: row.updatedAt ?? row.updated_at ?? null,
   };
 }
 
 async function getOwnerInventorySummary({ includeInactive = false } = {}) {
-  const inactiveSql = includeInactive ? sql`` : sql`AND p.is_active = true`;
+  const inactiveSql = includeInactive
+    ? sql``
+    : sql`AND COALESCE(p.is_active, true) = true`;
 
   const totalsRows = await db.execute(sql`
     SELECT
       COUNT(DISTINCT l.id)::int AS "branchesCount",
       COUNT(DISTINCT p.id)::int AS "productsCount",
-      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::int AS "totalQtyOnHand",
+      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::bigint AS "totalQtyOnHand",
+      COALESCE(
+        SUM(COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)),
+        0
+      )::bigint AS "inventoryValue",
       COUNT(*) FILTER (
         WHERE COALESCE(b.qty_on_hand, 0) > 0
           AND COALESCE(b.qty_on_hand, 0) <= ${LOW_STOCK_THRESHOLD}
@@ -80,7 +87,11 @@ async function getOwnerInventorySummary({ includeInactive = false } = {}) {
       l.code AS "locationCode",
       l.status AS "locationStatus",
       COUNT(DISTINCT p.id)::int AS "productsCount",
-      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::int AS "totalQtyOnHand",
+      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::bigint AS "totalQtyOnHand",
+      COALESCE(
+        SUM(COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)),
+        0
+      )::bigint AS "inventoryValue",
       COUNT(*) FILTER (
         WHERE COALESCE(b.qty_on_hand, 0) > 0
           AND COALESCE(b.qty_on_hand, 0) <= ${LOW_STOCK_THRESHOLD}
@@ -97,20 +108,38 @@ async function getOwnerInventorySummary({ includeInactive = false } = {}) {
     WHERE 1 = 1
     ${inactiveSql}
     GROUP BY l.id, l.name, l.code, l.status
-    ORDER BY l.name ASC
+    ORDER BY l.name ASC, l.id ASC
   `);
 
   const totals = (totalsRows.rows || totalsRows)[0] || {
     branchesCount: 0,
     productsCount: 0,
     totalQtyOnHand: 0,
+    inventoryValue: 0,
     lowStockCount: 0,
     outOfStockCount: 0,
   };
 
   return {
-    totals,
-    byLocation: byLocationRows.rows || byLocationRows,
+    totals: {
+      branchesCount: Number(totals.branchesCount ?? 0),
+      productsCount: Number(totals.productsCount ?? 0),
+      totalQtyOnHand: Number(totals.totalQtyOnHand ?? 0),
+      inventoryValue: Number(totals.inventoryValue ?? 0),
+      lowStockCount: Number(totals.lowStockCount ?? 0),
+      outOfStockCount: Number(totals.outOfStockCount ?? 0),
+    },
+    byLocation: (byLocationRows.rows || byLocationRows || []).map((row) => ({
+      locationId: Number(row.locationId ?? 0),
+      locationName: row.locationName ?? "",
+      locationCode: row.locationCode ?? "",
+      locationStatus: row.locationStatus ?? "",
+      productsCount: Number(row.productsCount ?? 0),
+      totalQtyOnHand: Number(row.totalQtyOnHand ?? 0),
+      inventoryValue: Number(row.inventoryValue ?? 0),
+      lowStockCount: Number(row.lowStockCount ?? 0),
+      outOfStockCount: Number(row.outOfStockCount ?? 0),
+    })),
   };
 }
 
@@ -127,7 +156,9 @@ async function listOwnerInventory({
   const searchValue = String(search || "").trim();
   const hasSearch = searchValue.length > 0;
 
-  const inactiveSql = includeInactive ? sql`` : sql`AND p.is_active = true`;
+  const inactiveSql = includeInactive
+    ? sql``
+    : sql`AND COALESCE(p.is_active, true) = true`;
 
   const locationSql = hasLocationFilter
     ? sql`AND l.id = ${parsedLocationId}`
@@ -136,7 +167,6 @@ async function listOwnerInventory({
   const searchSql = hasSearch
     ? sql`AND (
         p.name ILIKE ${"%" + searchValue + "%"}
-        OR COALESCE(p.display_name, '') ILIKE ${"%" + searchValue + "%"}
         OR COALESCE(p.sku, '') ILIKE ${"%" + searchValue + "%"}
         OR COALESCE(p.barcode, '') ILIKE ${"%" + searchValue + "%"}
         OR COALESCE(p.brand, '') ILIKE ${"%" + searchValue + "%"}
@@ -172,6 +202,7 @@ async function listOwnerInventory({
       p.max_discount_percent AS "maxDiscountPercent",
       p.is_active AS "isActive",
       COALESCE(b.qty_on_hand, 0)::int AS "qtyOnHand",
+      (COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0))::bigint AS "inventoryValue",
       b.updated_at AS "updatedAt"
     FROM products p
     INNER JOIN locations l
@@ -202,7 +233,9 @@ async function getOwnerProductInventoryByProductId({
     throw err;
   }
 
-  const inactiveSql = includeInactive ? sql`` : sql`AND p.is_active = true`;
+  const inactiveSql = includeInactive
+    ? sql``
+    : sql`AND COALESCE(p.is_active, true) = true`;
 
   const rowsResult = await db.execute(sql`
     SELECT
@@ -219,6 +252,7 @@ async function getOwnerProductInventoryByProductId({
       p.cost_price AS "purchasePrice",
       p.max_discount_percent AS "maxDiscountPercent",
       p.is_active AS "isActive",
+      (COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0))::bigint AS "inventoryValue",
       b.updated_at AS "updatedAt"
     FROM products p
     INNER JOIN locations l
@@ -250,6 +284,7 @@ async function getOwnerProductInventoryByProductId({
       locationCode: row.locationCode,
       locationStatus: row.locationStatus,
       qtyOnHand: Number(row.qtyOnHand ?? 0),
+      inventoryValue: Number(row.inventoryValue ?? 0),
       sellingPrice: Number(row.sellingPrice ?? 0),
       purchasePrice: Number(row.purchasePrice ?? 0),
       maxDiscountPercent: Number(row.maxDiscountPercent ?? 0),
@@ -419,6 +454,7 @@ async function adjustOwnerInventory({
       maxDiscountPercent: Number(product.maxDiscountPercent ?? 0),
       isActive: product.isActive !== false,
       qtyOnHand: nextQty,
+      inventoryValue: nextQty * Number(product.purchasePrice ?? 0),
       updatedAt: new Date().toISOString(),
       qtyChange: parsedQtyChange,
       reason: cleanReason,

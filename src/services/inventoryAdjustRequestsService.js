@@ -1,6 +1,8 @@
-// backend/src/services/inventoryAdjustRequestsService.js
+"use strict";
 
 const { db } = require("../config/db");
+const { and, eq, sql } = require("drizzle-orm");
+
 const notificationService = require("./notificationService");
 
 const {
@@ -9,9 +11,47 @@ const {
 
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
-const { products } = require("../db/schema/products.schema");
 
-const { and, eq, desc, sql } = require("drizzle-orm");
+function toInt(value, fallback = null) {
+  const n = Number(value);
+  return Number.isInteger(n) ? n : fallback;
+}
+
+function normalizeStatus(value) {
+  const s = String(value || "")
+    .trim()
+    .toUpperCase();
+
+  if (!s || s === "ALL") return null;
+  if (["PENDING", "APPROVED", "DECLINED"].includes(s)) return s;
+  return null;
+}
+
+function cleanReason(value) {
+  const s = String(value || "").trim();
+  return s || null;
+}
+
+function mapRequestRow(r) {
+  return {
+    id: Number(r?.id ?? 0),
+    locationId: Number(r?.locationId ?? r?.location_id ?? 0),
+    productId: Number(r?.productId ?? r?.product_id ?? 0),
+    qtyChange: Number(r?.qtyChange ?? r?.qty_change ?? 0),
+    reason: r?.reason ?? "",
+    status: r?.status ?? "PENDING",
+    requestedByUserId: Number(
+      r?.requestedByUserId ?? r?.requested_by_user_id ?? 0,
+    ),
+    decidedByUserId:
+      r?.decidedByUserId == null && r?.decided_by_user_id == null
+        ? null
+        : Number(r?.decidedByUserId ?? r?.decided_by_user_id ?? 0),
+    createdAt: r?.createdAt ?? r?.created_at ?? null,
+    decidedAt: r?.decidedAt ?? r?.decided_at ?? null,
+    productName: r?.productName ?? "Unknown Product",
+  };
+}
 
 /**
  * Create inventory adjustment request
@@ -23,52 +63,71 @@ async function createRequest({
   reason,
   requestedByUserId,
 }) {
+  const parsedLocationId = toInt(locationId);
+  const parsedProductId = toInt(productId);
+  const parsedQtyChange = toInt(qtyChange);
+  const parsedRequestedByUserId = toInt(requestedByUserId);
+  const normalizedReason = cleanReason(reason);
+
+  if (!parsedLocationId || !parsedProductId || !parsedRequestedByUserId) {
+    const err = new Error("Invalid request payload");
+    err.code = "BAD_PAYLOAD";
+    throw err;
+  }
+
+  if (!parsedQtyChange) {
+    const err = new Error("qtyChange must be a non-zero integer");
+    err.code = "BAD_QTY_CHANGE";
+    throw err;
+  }
+
   return db.transaction(async (tx) => {
-    const [row] = await tx
+    const insertedRows = await tx
       .insert(inventoryAdjustmentRequests)
       .values({
-        locationId,
-        productId,
-        qtyChange,
-        reason,
+        locationId: parsedLocationId,
+        productId: parsedProductId,
+        qtyChange: parsedQtyChange,
+        reason: normalizedReason,
         status: "PENDING",
-        requestedByUserId,
+        requestedByUserId: parsedRequestedByUserId,
         decidedByUserId: null,
-        createdAt: new Date(),
         decidedAt: null,
+        createdAt: new Date(),
       })
       .returning();
 
-    // ✅ FIX: audit log must include locationId (DB requires NOT NULL)
+    const row = insertedRows[0];
+
     await tx.insert(auditLogs).values({
-      locationId,
-      userId: requestedByUserId,
+      locationId: parsedLocationId,
+      userId: parsedRequestedByUserId,
       action: "INVENTORY_ADJUST_REQUEST_CREATE",
       entity: "inventory_adjustment_request",
       entityId: row.id,
-      description: `Requested inventory adjustment: productId=${productId}, qtyChange=${qtyChange}. reason=${reason || "-"}`,
+      description: `Requested inventory adjustment: productId=${parsedProductId}, qtyChange=${parsedQtyChange}. reason=${normalizedReason || "-"}`,
     });
 
-    // 🔔 Inventory adjustment request -> manager (warn)
     await notificationService.notifyRoles({
-      locationId,
+      locationId: parsedLocationId,
       roles: ["manager", "admin"],
-      actorUserId: requestedByUserId,
+      actorUserId: parsedRequestedByUserId,
       type: "INVENTORY_ADJUST_REQUEST_CREATED",
       title: "Inventory adjustment request",
-      body: `Product #${productId}, change: ${qtyChange}. Reason: ${reason || "-"}. Request #${row.id}.`,
+      body: `Product #${parsedProductId}, change: ${parsedQtyChange}. Reason: ${normalizedReason || "-"}. Request #${row.id}.`,
       priority: "warn",
       entity: "inventory_adjustment_request",
       entityId: Number(row.id),
     });
 
-    return row;
+    return mapRequestRow(row);
   });
 }
 
 /**
  * List inventory adjustment requests
- * ✅ FIXED: removed non-existent managerNote column
+ * - store_keeper => only own requests
+ * - manager/admin/owner => all requests in current branch
  */
 async function listRequests({
   locationId,
@@ -78,50 +137,56 @@ async function listRequests({
   limit = 100,
   offset = 0,
 } = {}) {
-  if (!locationId) {
+  const locId = toInt(locationId);
+  const uid = toInt(userId);
+  const lim = Math.max(1, Math.min(500, toInt(limit, 100)));
+  const off = Math.max(0, toInt(offset, 0));
+  const normalizedRole = String(role || "")
+    .trim()
+    .toLowerCase();
+  const normalizedStatus = normalizeStatus(status);
+
+  if (!locId) {
     const err = new Error("Missing locationId");
     err.code = "BAD_CONTEXT";
     throw err;
   }
 
-  const where = [eq(inventoryAdjustmentRequests.locationId, locationId)];
+  const sellerScopeSql =
+    normalizedRole === "store_keeper"
+      ? sql`AND r.requested_by_user_id = ${uid}`
+      : sql``;
 
-  if (role === "store_keeper") {
-    where.push(eq(inventoryAdjustmentRequests.requestedByUserId, userId));
-  }
+  const statusSql = normalizedStatus
+    ? sql`AND UPPER(r.status) = ${normalizedStatus}`
+    : sql``;
 
-  if (status) {
-    where.push(
-      eq(inventoryAdjustmentRequests.status, String(status).toUpperCase()),
-    );
-  }
+  const result = await db.execute(sql`
+    SELECT
+      r.id,
+      r.location_id AS "locationId",
+      r.product_id AS "productId",
+      r.qty_change AS "qtyChange",
+      r.reason,
+      r.status,
+      r.requested_by_user_id AS "requestedByUserId",
+      r.decided_by_user_id AS "decidedByUserId",
+      r.created_at AS "createdAt",
+      r.decided_at AS "decidedAt",
+      COALESCE(p.name, CONCAT('Product #', r.product_id::text)) AS "productName"
+    FROM inventory_adjustment_requests r
+    LEFT JOIN products p
+      ON p.id = r.product_id
+    WHERE r.location_id = ${locId}
+    ${sellerScopeSql}
+    ${statusSql}
+    ORDER BY r.created_at DESC, r.id DESC
+    LIMIT ${lim}
+    OFFSET ${off}
+  `);
 
-  const rows = await db
-    .select({
-      id: inventoryAdjustmentRequests.id,
-      productId: inventoryAdjustmentRequests.productId,
-      qtyChange: inventoryAdjustmentRequests.qtyChange,
-      reason: inventoryAdjustmentRequests.reason,
-      status: inventoryAdjustmentRequests.status,
-      requestedByUserId: inventoryAdjustmentRequests.requestedByUserId,
-      decidedByUserId: inventoryAdjustmentRequests.decidedByUserId,
-      createdAt: inventoryAdjustmentRequests.createdAt,
-      decidedAt: inventoryAdjustmentRequests.decidedAt,
-
-      // ✅ VALID column reference
-      productName: products.name,
-    })
-    .from(inventoryAdjustmentRequests)
-    .leftJoin(products, eq(products.id, inventoryAdjustmentRequests.productId))
-    .where(and(...where))
-    .orderBy(desc(inventoryAdjustmentRequests.createdAt))
-    .limit(limit)
-    .offset(offset);
-
-  return rows.map((r) => ({
-    ...r,
-    productName: r.productName || "Unknown Product",
-  }));
+  const rows = result.rows || result || [];
+  return rows.map(mapRequestRow);
 }
 
 /**
@@ -134,16 +199,39 @@ async function decideRequest({
   decision,
   note,
 }) {
+  const parsedLocationId = toInt(locationId);
+  const parsedManagerId = toInt(managerId);
+  const parsedRequestId = toInt(requestId);
+  const normalizedDecision = String(decision || "")
+    .trim()
+    .toUpperCase();
+  const normalizedNote = cleanReason(note);
+
+  if (!parsedLocationId || !parsedManagerId || !parsedRequestId) {
+    const err = new Error("Invalid decision payload");
+    err.code = "BAD_PAYLOAD";
+    throw err;
+  }
+
+  if (!["APPROVE", "DECLINE"].includes(normalizedDecision)) {
+    const err = new Error("Invalid decision");
+    err.code = "BAD_DECISION";
+    throw err;
+  }
+
   return db.transaction(async (tx) => {
-    const [reqRow] = await tx
+    const reqRows = await tx
       .select()
       .from(inventoryAdjustmentRequests)
       .where(
         and(
-          eq(inventoryAdjustmentRequests.id, requestId),
-          eq(inventoryAdjustmentRequests.locationId, locationId),
+          eq(inventoryAdjustmentRequests.id, parsedRequestId),
+          eq(inventoryAdjustmentRequests.locationId, parsedLocationId),
         ),
-      );
+      )
+      .limit(1);
+
+    const reqRow = reqRows[0];
 
     if (!reqRow) {
       const err = new Error("Request not found");
@@ -151,57 +239,76 @@ async function decideRequest({
       throw err;
     }
 
-    if (reqRow.status !== "PENDING") {
+    if (String(reqRow.status || "").toUpperCase() !== "PENDING") {
       const err = new Error("Already decided");
       err.code = "ALREADY_DECIDED";
       throw err;
     }
 
-    const nextStatus = decision === "APPROVE" ? "APPROVED" : "DECLINED";
+    const nextStatus =
+      normalizedDecision === "APPROVE" ? "APPROVED" : "DECLINED";
 
-    if (decision === "APPROVE") {
-      await tx
-        .insert(inventoryBalances)
-        .values({
-          locationId,
-          productId: reqRow.productId,
-          qtyOnHand: 0,
+    if (normalizedDecision === "APPROVE") {
+      const balanceRows = await tx
+        .select({
+          id: inventoryBalances.id,
+          qtyOnHand: inventoryBalances.qtyOnHand,
         })
-        .onConflictDoNothing();
+        .from(inventoryBalances)
+        .where(
+          and(
+            eq(inventoryBalances.locationId, parsedLocationId),
+            eq(inventoryBalances.productId, reqRow.productId),
+          ),
+        )
+        .limit(1);
 
-      await tx.execute(sql`
-        UPDATE inventory_balances
-        SET qty_on_hand = qty_on_hand + ${reqRow.qtyChange},
-            updated_at = now()
-        WHERE location_id = ${locationId}
-          AND product_id = ${reqRow.productId}
-      `);
+      const balance = balanceRows[0];
+
+      if (balance) {
+        await tx
+          .update(inventoryBalances)
+          .set({
+            qtyOnHand:
+              Number(balance.qtyOnHand || 0) + Number(reqRow.qtyChange || 0),
+            updatedAt: new Date(),
+          })
+          .where(eq(inventoryBalances.id, balance.id));
+      } else {
+        await tx.insert(inventoryBalances).values({
+          locationId: parsedLocationId,
+          productId: reqRow.productId,
+          qtyOnHand: Number(reqRow.qtyChange || 0),
+          updatedAt: new Date(),
+        });
+      }
     }
 
-    const [updated] = await tx
+    const updatedRows = await tx
       .update(inventoryAdjustmentRequests)
       .set({
         status: nextStatus,
-        decidedByUserId: managerId,
+        decidedByUserId: parsedManagerId,
         decidedAt: new Date(),
       })
-      .where(eq(inventoryAdjustmentRequests.id, requestId))
+      .where(eq(inventoryAdjustmentRequests.id, parsedRequestId))
       .returning();
 
-    // ✅ FIX: audit log must include locationId (DB requires NOT NULL)
+    const updated = updatedRows[0];
+
     await tx.insert(auditLogs).values({
-      locationId,
-      userId: managerId,
+      locationId: parsedLocationId,
+      userId: parsedManagerId,
       action:
-        decision === "APPROVE"
+        normalizedDecision === "APPROVE"
           ? "INVENTORY_ADJUST_REQUEST_APPROVE"
           : "INVENTORY_ADJUST_REQUEST_DECLINE",
       entity: "inventory_adjustment_request",
-      entityId: requestId,
-      description: `Adjustment request #${requestId} ${nextStatus}. note=${note || "-"}`,
+      entityId: parsedRequestId,
+      description: `Adjustment request #${parsedRequestId} ${nextStatus}. note=${normalizedNote || "-"}`,
     });
 
-    return updated;
+    return mapRequestRow(updated);
   });
 }
 

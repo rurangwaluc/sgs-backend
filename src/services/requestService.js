@@ -1,7 +1,7 @@
 "use strict";
 
 const { db } = require("../config/db");
-const { sql, and, eq, desc } = require("drizzle-orm");
+const { sql, and, eq } = require("drizzle-orm");
 
 const { stockRequests } = require("../db/schema/stock_requests.schema");
 const {
@@ -10,7 +10,6 @@ const {
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { sellerHoldings } = require("../db/schema/seller_holdings.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
-const { users } = require("../db/schema/users.schema");
 
 const notificationService = require("./notificationService");
 
@@ -51,50 +50,63 @@ async function listRequests({
     throw err;
   }
 
+  const sellerIdNum = toInt(sellerId);
+  const hasSellerFilter = sellerIdNum > 0;
+
+  const statusText = String(status || "")
+    .trim()
+    .toUpperCase();
+  const hasStatusFilter = !!statusText;
+
   const p = Math.max(1, toInt(page) || 1);
   const l = Math.max(1, Math.min(100, toInt(limit) || 20));
   const offset = (p - 1) * l;
 
-  const where = [eq(stockRequests.locationId, locId)];
-
-  if (sellerId) where.push(eq(stockRequests.sellerId, toInt(sellerId)));
-  if (status)
-    where.push(eq(stockRequests.status, String(status).toUpperCase()));
-
   const totalRes = await db.execute(sql`
-    SELECT COUNT(*)::int as c
-    FROM stock_requests
-    WHERE location_id = ${locId}
-    ${sellerId ? sql`AND seller_id = ${toInt(sellerId)}` : sql``}
-    ${status ? sql`AND status = ${String(status).toUpperCase()}` : sql``}
+    SELECT COUNT(*)::int AS c
+    FROM stock_requests sr
+    WHERE sr.location_id = ${locId}
+      ${hasSellerFilter ? sql`AND sr.seller_id = ${sellerIdNum}` : sql``}
+      ${hasStatusFilter ? sql`AND UPPER(sr.status) = ${statusText}` : sql``}
   `);
+
   const total = Number((totalRes.rows || totalRes || [])[0]?.c || 0);
 
-  const rows = await db
-    .select({
-      id: stockRequests.id,
-      locationId: stockRequests.locationId,
-      sellerId: stockRequests.sellerId,
-      status: stockRequests.status,
-      note: stockRequests.note,
-      createdAt: stockRequests.createdAt,
-      approvedAt: stockRequests.approvedAt,
-      approvedBy: stockRequests.approvedBy,
-      rejectedAt: stockRequests.rejectedAt,
-      rejectedBy: stockRequests.rejectedBy,
-      releasedAt: stockRequests.releasedAt,
-      releasedBy: stockRequests.releasedBy,
-      sellerName: users.name,
-      sellerEmail: users.email,
-    })
-    .from(stockRequests)
-    .leftJoin(users, eq(users.id, stockRequests.sellerId))
-    .where(and(...where))
-    .orderBy(desc(stockRequests.id))
-    .limit(l)
-    .offset(offset);
+  const rowsRes = await db.execute(sql`
+    SELECT
+      sr.id,
+      sr.location_id AS "locationId",
+      sr.seller_id AS "sellerId",
+      sr.status,
+      sr.note,
+      sr.created_at AS "createdAt",
+      sr.approved_at AS "approvedAt",
+      sr.approved_by AS "approvedBy",
+      sr.rejected_at AS "rejectedAt",
+      sr.rejected_by AS "rejectedBy",
+      sr.released_at AS "releasedAt",
+      sr.released_by AS "releasedBy",
+      COALESCE(u.name, '') AS "sellerName",
+      COALESCE(u.email, '') AS "sellerEmail"
+    FROM stock_requests sr
+    LEFT JOIN users u
+      ON u.id = sr.seller_id
+    WHERE sr.location_id = ${locId}
+      ${hasSellerFilter ? sql`AND sr.seller_id = ${sellerIdNum}` : sql``}
+      ${hasStatusFilter ? sql`AND UPPER(sr.status) = ${statusText}` : sql``}
+    ORDER BY sr.id DESC
+    LIMIT ${l}
+    OFFSET ${offset}
+  `);
 
-  return { requests: rows || [], page: p, limit: l, total };
+  const rows = rowsRes.rows || rowsRes || [];
+
+  return {
+    requests: rows,
+    page: p,
+    limit: l,
+    total,
+  };
 }
 
 async function createRequest({ locationId, sellerId, note, items }) {
@@ -148,7 +160,6 @@ async function createRequest({ locationId, sellerId, note, items }) {
       description: `Stock request #${reqRow.id} created`,
     });
 
-    // 🔔 URGENT: notify storekeepers in same location
     await notificationService.notifyRoles({
       locationId: locId,
       roles: ["store_keeper"],
@@ -233,7 +244,6 @@ async function approveOrReject({
         description: `Stock request #${rid} approved`,
       });
 
-      // notify seller
       await notificationService.createNotification({
         locationId: locId,
         recipientUserId: reqRow.sellerId,
@@ -249,7 +259,6 @@ async function approveOrReject({
       return { ok: true, decision: "APPROVE" };
     }
 
-    // REJECT
     await tx
       .update(stockRequests)
       .set({
@@ -329,12 +338,10 @@ async function releaseToSeller({ locationId, requestId, storeKeeperId }) {
       throw err;
     }
 
-    // Deduct inventory + add to seller holdings
     for (const it of items) {
       const pid = toInt(it.productId);
       const qty = toInt(it.qty);
 
-      // Ensure inventory row exists
       await tx
         .insert(inventoryBalances)
         .values({ locationId: locId, productId: pid, qtyOnHand: 0 })
@@ -372,7 +379,6 @@ async function releaseToSeller({ locationId, requestId, storeKeeperId }) {
           ),
         );
 
-      // Upsert seller holding
       await tx
         .insert(sellerHoldings)
         .values({
@@ -414,7 +420,6 @@ async function releaseToSeller({ locationId, requestId, storeKeeperId }) {
       description: `Stock request #${rid} released to seller`,
     });
 
-    // notify seller
     await notificationService.createNotification({
       locationId: locId,
       recipientUserId: reqRow.sellerId,

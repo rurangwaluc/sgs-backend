@@ -12,64 +12,71 @@ function toInt(v) {
 }
 
 async function getAdminDashboard({ locationId }) {
+  const parsedLocationId = Number(locationId);
+  if (!Number.isFinite(parsedLocationId) || parsedLocationId <= 0) {
+    const err = new Error("Invalid locationId");
+    err.code = "INVALID_LOCATION_ID";
+    throw err;
+  }
+
   const todayStart = sql`date_trunc('day', now())`;
   const yesterdayStart = sql`date_trunc('day', now()) - interval '1 day'`;
 
   // 1) Sales KPIs
   const salesToday = rowsOf(
     await db.execute(sql`
-        select
-          count(*)::int as count,
-          coalesce(sum(total_amount),0)::bigint as total
-        from sales
-        where location_id = ${locationId}
-          and created_at >= ${todayStart}
+        SELECT
+          COUNT(*)::int AS count,
+          COALESCE(SUM(total_amount), 0)::bigint AS total
+        FROM sales
+        WHERE location_id = ${parsedLocationId}
+          AND created_at >= ${todayStart}
       `),
   )[0] || { count: 0, total: 0 };
 
   const awaitingPayment = rowsOf(
     await db.execute(sql`
-        select count(*)::int as count
-        from sales
-        where location_id = ${locationId}
-          and status = 'AWAITING_PAYMENT_RECORD'
+        SELECT COUNT(*)::int AS count
+        FROM sales
+        WHERE location_id = ${parsedLocationId}
+          AND status = 'AWAITING_PAYMENT_RECORD'
       `),
   )[0] || { count: 0 };
 
   const draftSales = rowsOf(
     await db.execute(sql`
-        select count(*)::int as count
-        from sales
-        where location_id = ${locationId}
-          and status = 'DRAFT'
+        SELECT COUNT(*)::int AS count
+        FROM sales
+        WHERE location_id = ${parsedLocationId}
+          AND status = 'DRAFT'
       `),
   )[0] || { count: 0 };
 
   const completedToday = rowsOf(
     await db.execute(sql`
-        select count(*)::int as count
-        from sales
-        where location_id = ${locationId}
-          and status = 'COMPLETED'
-          and created_at >= ${todayStart}
+        SELECT COUNT(*)::int AS count
+        FROM sales
+        WHERE location_id = ${parsedLocationId}
+          AND status = 'COMPLETED'
+          AND created_at >= ${todayStart}
       `),
   )[0] || { count: 0 };
 
-  // 2) Stuck sales (Admin: exclude COMPLETED/CANCELLED/REFUNDED)
+  // 2) Stuck sales
   const stuck = rowsOf(
     await db.execute(sql`
-      select
+      SELECT
         id,
         status,
-        total_amount as "totalAmount",
-        created_at as "createdAt",
-        extract(epoch from (now() - created_at))::int as "ageSeconds"
-      from sales
-      where location_id = ${locationId}
-        and status not in ('COMPLETED','CANCELLED','REFUNDED')
-        and created_at < (now() - interval '30 minutes')
-      order by created_at asc
-      limit 20
+        total_amount AS "totalAmount",
+        created_at AS "createdAt",
+        EXTRACT(EPOCH FROM (now() - created_at))::int AS "ageSeconds"
+      FROM sales
+      WHERE location_id = ${parsedLocationId}
+        AND status NOT IN ('COMPLETED', 'CANCELLED', 'REFUNDED')
+        AND created_at < (now() - interval '30 minutes')
+      ORDER BY created_at ASC
+      LIMIT 20
     `),
   ).map((s) => ({
     ...s,
@@ -80,49 +87,49 @@ async function getAdminDashboard({ locationId }) {
   // 3) Payments summary
   const paymentsToday = rowsOf(
     await db.execute(sql`
-        select
-          count(*)::int as count,
-          coalesce(sum(amount),0)::bigint as total
-        from payments
-        where location_id = ${locationId}
-          and created_at >= ${todayStart}
+        SELECT
+          COUNT(*)::int AS count,
+          COALESCE(SUM(amount), 0)::bigint AS total
+        FROM payments
+        WHERE location_id = ${parsedLocationId}
+          AND created_at >= ${todayStart}
       `),
   )[0] || { count: 0, total: 0 };
 
   const paymentsYesterday = rowsOf(
     await db.execute(sql`
-        select
-          count(*)::int as count,
-          coalesce(sum(amount),0)::bigint as total
-        from payments
-        where location_id = ${locationId}
-          and created_at >= ${yesterdayStart}
-          and created_at < ${todayStart}
+        SELECT
+          COUNT(*)::int AS count,
+          COALESCE(SUM(amount), 0)::bigint AS total
+        FROM payments
+        WHERE location_id = ${parsedLocationId}
+          AND created_at >= ${yesterdayStart}
+          AND created_at < ${todayStart}
       `),
   )[0] || { count: 0, total: 0 };
 
   const paymentsAll = rowsOf(
     await db.execute(sql`
-        select
-          count(*)::int as count,
-          coalesce(sum(amount),0)::bigint as total
-        from payments
-        where location_id = ${locationId}
+        SELECT
+          COUNT(*)::int AS count,
+          COALESCE(SUM(amount), 0)::bigint AS total
+        FROM payments
+        WHERE location_id = ${parsedLocationId}
       `),
   )[0] || { count: 0, total: 0 };
 
   // 4) Payment breakdown (today)
   const breakdownToday = rowsOf(
     await db.execute(sql`
-      select
-        upper(coalesce(method::text,'OTHER')) as method,
-        count(*)::int as count,
-        coalesce(sum(amount),0)::bigint as total
-      from payments
-      where location_id = ${locationId}
-        and created_at >= ${todayStart}
-      group by 1
-      order by total desc
+      SELECT
+        UPPER(COALESCE(method::text, 'OTHER')) AS method,
+        COUNT(*)::int AS count,
+        COALESCE(SUM(amount), 0)::bigint AS total
+      FROM payments
+      WHERE location_id = ${parsedLocationId}
+        AND created_at >= ${todayStart}
+      GROUP BY 1
+      ORDER BY total DESC
     `),
   ).map((r) => ({
     method: r.method,
@@ -133,16 +140,16 @@ async function getAdminDashboard({ locationId }) {
   // 5) Last 10 payments
   const last10 = rowsOf(
     await db.execute(sql`
-      select
+      SELECT
         id,
-        sale_id as "saleId",
+        sale_id AS "saleId",
         amount,
         method,
-        created_at as "createdAt"
-      from payments
-      where location_id = ${locationId}
-      order by created_at desc
-      limit 10
+        created_at AS "createdAt"
+      FROM payments
+      WHERE location_id = ${parsedLocationId}
+      ORDER BY created_at DESC
+      LIMIT 10
     `),
   ).map((p) => ({
     id: p.id,
@@ -152,24 +159,58 @@ async function getAdminDashboard({ locationId }) {
     createdAt: p.createdAt,
   }));
 
-  // 6) Low stock (inventory_balances)
+  // 6) Low stock
   const lowStockThreshold = 5;
 
   const lowStock = rowsOf(
     await db.execute(sql`
-      select
-        product_id as "productId",
-        coalesce(qty_on_hand,0)::int as "qtyOnHand"
-      from inventory_balances
-      where location_id = ${locationId}
-        and coalesce(qty_on_hand,0) <= ${lowStockThreshold}
-      order by qty_on_hand asc
-      limit 15
+      SELECT
+        product_id AS "productId",
+        COALESCE(qty_on_hand, 0)::int AS "qtyOnHand"
+      FROM inventory_balances
+      WHERE location_id = ${parsedLocationId}
+        AND COALESCE(qty_on_hand, 0) <= ${lowStockThreshold}
+      ORDER BY qty_on_hand ASC
+      LIMIT 15
     `),
   ).map((r) => ({
     productId: r.productId,
     qtyOnHand: toInt(r.qtyOnHand),
   }));
+
+  // 7) Admin branch inventory totals
+  const inventorySummary = rowsOf(
+    await db.execute(sql`
+        SELECT
+          ${parsedLocationId}::int AS "locationId",
+          COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::bigint AS "totalQtyOnHand",
+          COALESCE(
+            SUM(COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)),
+            0
+          )::bigint AS "inventoryValue",
+          COUNT(DISTINCT p.id)::int AS "productsCount",
+          COUNT(*) FILTER (
+            WHERE COALESCE(b.qty_on_hand, 0) > 0
+              AND COALESCE(b.qty_on_hand, 0) <= ${lowStockThreshold}
+          )::int AS "lowStockCount",
+          COUNT(*) FILTER (
+            WHERE COALESCE(b.qty_on_hand, 0) <= 0
+          )::int AS "outOfStockCount"
+        FROM products p
+        LEFT JOIN inventory_balances b
+          ON b.product_id = p.id
+         AND b.location_id = p.location_id
+        WHERE p.location_id = ${parsedLocationId}
+          AND COALESCE(p.is_active, true) = true
+      `),
+  )[0] || {
+    locationId: parsedLocationId,
+    totalQtyOnHand: 0,
+    inventoryValue: 0,
+    productsCount: 0,
+    lowStockCount: 0,
+    outOfStockCount: 0,
+  };
 
   return {
     sales: {
@@ -202,6 +243,12 @@ async function getAdminDashboard({ locationId }) {
     inventory: {
       lowStock,
       lowStockThreshold,
+      locationId: toInt(inventorySummary.locationId),
+      totalQtyOnHand: toInt(inventorySummary.totalQtyOnHand),
+      inventoryValue: toInt(inventorySummary.inventoryValue),
+      productsCount: toInt(inventorySummary.productsCount),
+      lowStockCount: toInt(inventorySummary.lowStockCount),
+      outOfStockCount: toInt(inventorySummary.outOfStockCount),
     },
   };
 }

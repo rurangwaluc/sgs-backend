@@ -1,4 +1,3 @@
-// backend/src/routes/uploads.routes.js
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -8,9 +7,11 @@ const { requirePermission } = require("../middleware/requirePermission");
 const { safeLogAudit } = require("../services/auditService");
 const AUDIT = require("../audit/actions");
 
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+const UPLOAD_BASE_DIR =
+  process.env.UPLOAD_DIR && String(process.env.UPLOAD_DIR).trim()
+    ? String(process.env.UPLOAD_DIR).trim()
+    : path.join(process.cwd(), "uploads");
 
-// Allowed file types for a retail BCS (images + PDFs)
 const ALLOWED_MIME_TO_EXT = Object.freeze({
   "image/jpeg": ".jpg",
   "image/png": ".png",
@@ -29,8 +30,8 @@ const EXT_TO_CONTENT_TYPE = Object.freeze({
 });
 
 function ensureUploadDir() {
-  if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  if (!fs.existsSync(UPLOAD_BASE_DIR)) {
+    fs.mkdirSync(UPLOAD_BASE_DIR, { recursive: true });
   }
 }
 
@@ -39,12 +40,20 @@ function randomHex(bytes = 16) {
 }
 
 function isSafeStoredFilename(name) {
-  // We store as: 32-hex + known ext
   return /^[a-f0-9]{32}\.(jpg|png|webp|gif|pdf)$/i.test(String(name || ""));
 }
 
+function getFilePath(name) {
+  return path.join(UPLOAD_BASE_DIR, name);
+}
+
+function isImageExt(ext) {
+  return [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(
+    String(ext || "").toLowerCase(),
+  );
+}
+
 async function uploadsRoutes(app) {
-  // Upload files (authenticated)
   app.post(
     "/uploads",
     {
@@ -71,7 +80,7 @@ async function uploadsRoutes(app) {
         }
 
         const safeName = `${randomHex(16)}${ext}`;
-        const filePath = path.join(UPLOAD_DIR, safeName);
+        const filePath = getFilePath(safeName);
 
         await new Promise((resolve, reject) => {
           const ws = fs.createWriteStream(filePath, { flags: "wx" });
@@ -103,42 +112,49 @@ async function uploadsRoutes(app) {
     },
   );
 
-  // Serve uploaded files (authenticated)
-  app.get(
-    "/uploads/:name",
-    { preHandler: [requirePermission(ACTIONS.UPLOAD_VIEW)] },
-    async (request, reply) => {
-      ensureUploadDir();
+  app.get("/uploads/:name", async (request, reply) => {
+    ensureUploadDir();
 
-      const name = String(request.params.name || "");
-      if (!isSafeStoredFilename(name)) {
-        return reply.status(400).send({ error: "Invalid file name" });
-      }
+    const name = String(request.params.name || "");
+    if (!isSafeStoredFilename(name)) {
+      return reply.status(400).send({ error: "Invalid file name" });
+    }
 
-      const filePath = path.join(UPLOAD_DIR, name);
-      if (!fs.existsSync(filePath)) {
-        return reply.status(404).send({ error: "File not found" });
-      }
+    const filePath = getFilePath(name);
+    if (!fs.existsSync(filePath)) {
+      return reply.status(404).send({ error: "File not found" });
+    }
 
-      const ext = path.extname(name).toLowerCase();
-      const contentType =
-        EXT_TO_CONTENT_TYPE[ext] || "application/octet-stream";
+    const ext = path.extname(name).toLowerCase();
+    const contentType = EXT_TO_CONTENT_TYPE[ext] || "application/octet-stream";
 
-      await safeLogAudit({
-        locationId: request.user?.locationId ?? null,
-        userId: request.user?.id ?? null,
-        action: AUDIT.UPLOAD_VIEW,
-        entity: "upload",
-        entityId: null,
-        description: `Viewed upload ${name}`,
-        meta: { file: name },
-      });
-
-      reply.header("Cache-Control", "private, max-age=3600");
-      reply.type(contentType);
+    if (isImageExt(ext)) {
+      reply.header(
+        "Cache-Control",
+        "public, max-age=300, stale-while-revalidate=86400",
+      );
+      reply.header("Content-Type", contentType);
+      reply.header("Content-Disposition", "inline");
       return reply.send(fs.createReadStream(filePath));
-    },
-  );
+    }
+
+    await requirePermission(ACTIONS.UPLOAD_VIEW)(request, reply);
+
+    await safeLogAudit({
+      locationId: request.user?.locationId ?? null,
+      userId: request.user?.id ?? null,
+      action: AUDIT.UPLOAD_VIEW,
+      entity: "upload",
+      entityId: null,
+      description: `Viewed upload ${name}`,
+      meta: { file: name },
+    });
+
+    reply.header("Cache-Control", "private, max-age=3600");
+    reply.header("Content-Type", contentType);
+    reply.header("Content-Disposition", "inline");
+    return reply.send(fs.createReadStream(filePath));
+  });
 }
 
 module.exports = { uploadsRoutes };
