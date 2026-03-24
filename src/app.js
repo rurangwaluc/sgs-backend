@@ -1,8 +1,10 @@
+const path = require("path");
 const fastify = require("fastify");
 const rateLimit = require("@fastify/rate-limit");
 const cors = require("@fastify/cors");
 const cookie = require("@fastify/cookie");
 const multipart = require("@fastify/multipart");
+const fastifyStatic = require("@fastify/static");
 
 const { env } = require("./config/env");
 const { sessionAuth } = require("./middleware/sessionAuth");
@@ -120,6 +122,12 @@ function buildApp() {
   });
 
   app.register(rateLimit, { global: false });
+
+  app.register(fastifyStatic, {
+    root: path.join(process.cwd(), "public"),
+    prefix: "/public/",
+    decorateReply: false,
+  });
 
   app.addHook("preHandler", sessionAuth);
 

@@ -26,6 +26,7 @@ function readSignedSid(request) {
 
 async function sessionAuth(request) {
   const tokenRaw = readSignedSid(request);
+
   if (!tokenRaw) {
     request.session = null;
     request.user = null;
@@ -51,6 +52,7 @@ async function sessionAuth(request) {
     .where(eq(sessions.sessionToken, tokenHash));
 
   const session = sessionRows[0];
+
   if (!session || session.expiresAt <= now) {
     request.session = null;
     request.user = null;
@@ -71,6 +73,7 @@ async function sessionAuth(request) {
     .where(eq(users.id, session.userId));
 
   const user = userRows[0];
+
   if (!user || user.isActive === false) {
     request.session = null;
     request.user = null;
@@ -91,6 +94,20 @@ async function sessionAuth(request) {
       id: locations.id,
       name: locations.name,
       code: locations.code,
+      email: locations.email,
+      phone: locations.phone,
+      website: locations.website,
+      logoUrl: locations.logoUrl,
+      address: locations.address,
+      tin: locations.tin,
+      momoCode: locations.momoCode,
+      bankAccounts: locations.bankAccounts,
+      status: locations.status,
+      openedAt: locations.openedAt,
+      closedAt: locations.closedAt,
+      archivedAt: locations.archivedAt,
+      closeReason: locations.closeReason,
+      updatedAt: locations.updatedAt,
     })
     .from(locations)
     .where(eq(locations.id, user.locationId));
@@ -109,9 +126,51 @@ async function sessionAuth(request) {
   };
 
   request.user = {
-    ...user,
+    id: user.id,
+    locationId: user.locationId,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    isActive: user.isActive,
     lastSeenAt: now.toISOString(),
-    location: loc,
+
+    location: loc
+      ? {
+          id: loc.id,
+          name: loc.name,
+          code: loc.code,
+          email: loc.email ?? null,
+          phone: loc.phone ?? null,
+          website: loc.website ?? null,
+          logoUrl: loc.logoUrl ?? null,
+          address: loc.address ?? null,
+          tin: loc.tin ?? null,
+          momoCode: loc.momoCode ?? null,
+          bankAccounts: Array.isArray(loc.bankAccounts) ? loc.bankAccounts : [],
+          status: loc.status ?? null,
+          openedAt: loc.openedAt ?? null,
+          closedAt: loc.closedAt ?? null,
+          archivedAt: loc.archivedAt ?? null,
+          closeReason: loc.closeReason ?? null,
+          updatedAt: loc.updatedAt ?? null,
+        }
+      : null,
+
+    business: loc
+      ? {
+          name: loc.name,
+          code: loc.code,
+          email: loc.email ?? null,
+          phone: loc.phone ?? null,
+          website: loc.website ?? null,
+          logoUrl: loc.logoUrl ?? null,
+          address: loc.address ?? null,
+          tin: loc.tin ?? null,
+          momoCode: loc.momoCode ?? null,
+          bankAccounts: Array.isArray(loc.bankAccounts) ? loc.bankAccounts : [],
+        }
+      : null,
+
     actingAsRole: session.actingAsRole ?? null,
     coverageReason: session.coverageReason ?? null,
     coverageNote: session.coverageNote ?? null,
