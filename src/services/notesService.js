@@ -1,6 +1,6 @@
 "use strict";
 
-const { and, desc, eq, isNull, lt, ne, or } = require("drizzle-orm");
+const { and, desc, eq, isNull, lt, or } = require("drizzle-orm");
 
 const { db } = require("../config/db");
 const { notes } = require("../db/schema/notes.schema");
@@ -39,7 +39,6 @@ function toEntityType(v) {
   const s = String(v || "")
     .trim()
     .toLowerCase();
-
   if (!s) return null;
   if (!ALLOWED_ENTITY_TYPES.has(s)) return null;
   return s;
@@ -147,6 +146,7 @@ async function getNoteScope(noteId) {
     .select({
       id: notes.id,
       locationId: notes.locationId,
+      userId: notes.userId,
       entity: notes.entity,
       entityId: notes.entityId,
       parentNoteId: notes.parentNoteId,
@@ -371,9 +371,7 @@ async function listNotes({
   }
 
   if (onlyRoot) {
-    where.push(
-      or(isNull(notes.parentNoteId), eq(notes.parentNoteId, notes.id)),
-    );
+    where.push(isNull(notes.parentNoteId));
   }
 
   if (!toBool(includeDeleted, false)) {
@@ -439,6 +437,82 @@ async function listNotes({
   };
 }
 
+async function editNote({ noteId, locationId, userId, message }) {
+  const id = toInt(noteId, null);
+  const locId = toInt(locationId, null);
+  const actorId = toInt(userId, null);
+  const cleanMessage = toNoteMessage(message);
+
+  if (!id) {
+    const err = new Error("noteId is required");
+    err.code = "BAD_NOTE_ID";
+    throw err;
+  }
+
+  if (!locId) {
+    const err = new Error("locationId is required");
+    err.code = "BAD_LOCATION";
+    throw err;
+  }
+
+  if (!actorId) {
+    const err = new Error("userId is required");
+    err.code = "BAD_USER";
+    throw err;
+  }
+
+  if (!cleanMessage) {
+    const err = new Error("Message is required");
+    err.code = "BAD_MESSAGE";
+    throw err;
+  }
+
+  const scope = await getNoteScope(id);
+
+  if (!scope || Number(scope.locationId) !== locId) {
+    const err = new Error("Note not found");
+    err.code = "NOTE_NOT_FOUND";
+    throw err;
+  }
+
+  if (scope.isDeleted) {
+    const err = new Error("Deleted note cannot be edited");
+    err.code = "NOTE_DELETED";
+    throw err;
+  }
+
+  const now = new Date();
+
+  await db
+    .update(notes)
+    .set({
+      body: cleanMessage,
+      editedAt: now,
+      editedBy: actorId,
+      updatedAt: now,
+    })
+    .where(and(eq(notes.id, id), eq(notes.locationId, locId)));
+
+  const note = await getHydratedNoteById(id);
+
+  await safeLogAudit({
+    locationId: locId,
+    userId: actorId,
+    action: AUDIT.INTERNAL_NOTE_EDITED,
+    entity: "note",
+    entityId: id,
+    description: "Internal note edited",
+    meta: {
+      noteId: id,
+      rootNoteId: note?.rootNoteId || null,
+      entityType: note?.entityType || null,
+      entityId: note?.entityId || null,
+    },
+  });
+
+  return note;
+}
+
 async function pinNote({ noteId, locationId, userId, pinned = true }) {
   const id = toInt(noteId, null);
   const locId = toInt(locationId, null);
@@ -463,9 +537,16 @@ async function pinNote({ noteId, locationId, userId, pinned = true }) {
   }
 
   const scope = await getNoteScope(id);
+
   if (!scope || Number(scope.locationId) !== locId) {
     const err = new Error("Note not found");
     err.code = "NOTE_NOT_FOUND";
+    throw err;
+  }
+
+  if (scope.isDeleted) {
+    const err = new Error("Deleted note cannot be pinned");
+    err.code = "NOTE_DELETED";
     throw err;
   }
 
@@ -523,9 +604,16 @@ async function resolveNote({ noteId, locationId, userId, resolved = true }) {
   }
 
   const scope = await getNoteScope(id);
+
   if (!scope || Number(scope.locationId) !== locId) {
     const err = new Error("Note not found");
     err.code = "NOTE_NOT_FOUND";
+    throw err;
+  }
+
+  if (scope.isDeleted) {
+    const err = new Error("Deleted note cannot be resolved");
+    err.code = "NOTE_DELETED";
     throw err;
   }
 
@@ -563,81 +651,6 @@ async function resolveNote({ noteId, locationId, userId, resolved = true }) {
   return note;
 }
 
-async function editNote({ noteId, locationId, userId, message }) {
-  const id = toInt(noteId, null);
-  const locId = toInt(locationId, null);
-  const actorId = toInt(userId, null);
-  const cleanMessage = toNoteMessage(message);
-
-  if (!id) {
-    const err = new Error("noteId is required");
-    err.code = "BAD_NOTE_ID";
-    throw err;
-  }
-
-  if (!locId) {
-    const err = new Error("locationId is required");
-    err.code = "BAD_LOCATION";
-    throw err;
-  }
-
-  if (!actorId) {
-    const err = new Error("userId is required");
-    err.code = "BAD_USER";
-    throw err;
-  }
-
-  if (!cleanMessage) {
-    const err = new Error("Message is required");
-    err.code = "BAD_MESSAGE";
-    throw err;
-  }
-
-  const scope = await getNoteScope(id);
-  if (!scope || Number(scope.locationId) !== locId) {
-    const err = new Error("Note not found");
-    err.code = "NOTE_NOT_FOUND";
-    throw err;
-  }
-
-  if (scope.isDeleted) {
-    const err = new Error("Deleted note cannot be edited");
-    err.code = "NOTE_DELETED";
-    throw err;
-  }
-
-  const now = new Date();
-
-  await db
-    .update(notes)
-    .set({
-      body: cleanMessage,
-      editedAt: now,
-      editedBy: actorId,
-      updatedAt: now,
-    })
-    .where(and(eq(notes.id, id), eq(notes.locationId, locId)));
-
-  const note = await getHydratedNoteById(id);
-
-  await safeLogAudit({
-    locationId: locId,
-    userId: actorId,
-    action: AUDIT.INTERNAL_NOTE_EDITED,
-    entity: "note",
-    entityId: id,
-    description: "Internal note edited",
-    meta: {
-      noteId: id,
-      rootNoteId: note?.rootNoteId || null,
-      entityType: note?.entityType || null,
-      entityId: note?.entityId || null,
-    },
-  });
-
-  return note;
-}
-
 async function deleteNote({ noteId, locationId, userId }) {
   const id = toInt(noteId, null);
   const locId = toInt(locationId, null);
@@ -662,10 +675,15 @@ async function deleteNote({ noteId, locationId, userId }) {
   }
 
   const scope = await getNoteScope(id);
+
   if (!scope || Number(scope.locationId) !== locId) {
     const err = new Error("Note not found");
     err.code = "NOTE_NOT_FOUND";
     throw err;
+  }
+
+  if (scope.isDeleted) {
+    return getHydratedNoteById(id);
   }
 
   const now = new Date();
@@ -704,8 +722,8 @@ module.exports = {
   createNote,
   listNotes,
   getHydratedNoteById,
+  editNote,
   pinNote,
   resolveNote,
-  editNote,
   deleteNote,
 };

@@ -48,6 +48,7 @@ function handleServiceError(request, reply, e, logMessage) {
     e.code === "BAD_ENTITY_TYPE" ||
     e.code === "BAD_ENTITY_ID" ||
     e.code === "BAD_NOTE_ID" ||
+    e.code === "BAD_PARENT_NOTE" ||
     e.code === "BAD_PARENT_NOTE_ID" ||
     e.code === "BAD_ROOT_NOTE_ID" ||
     e.code === "BAD_PIN_STATE" ||
@@ -72,7 +73,8 @@ function handleServiceError(request, reply, e, logMessage) {
     e.code === "NOTE_EDIT_FORBIDDEN" ||
     e.code === "NOTE_DELETE_FORBIDDEN" ||
     e.code === "NOTE_PIN_FORBIDDEN" ||
-    e.code === "NOTE_RESOLVE_FORBIDDEN"
+    e.code === "NOTE_RESOLVE_FORBIDDEN" ||
+    e.code === "NOTE_DELETED"
   ) {
     return reply.status(403).send({ error: e.message });
   }
@@ -163,11 +165,9 @@ async function editNote(request, reply) {
   try {
     const note = await notesService.editNote({
       noteId,
-      actorUserId: request.user.id,
-      actorRole: request.user.role,
-      actorLocationId: request.user.locationId,
+      locationId: request.user.locationId,
+      userId: request.user.id,
       message: parsed.data.message,
-      ownerMode: isOwner(request.user),
     });
 
     return reply.send({
@@ -193,13 +193,11 @@ async function pinNote(request, reply) {
   }
 
   try {
-    const note = await notesService.setPinnedState({
+    const note = await notesService.pinNote({
       noteId,
-      actorUserId: request.user.id,
-      actorRole: request.user.role,
-      actorLocationId: request.user.locationId,
+      locationId: request.user.locationId,
+      userId: request.user.id,
       pinned: parsed.data.pinned,
-      ownerMode: isOwner(request.user),
     });
 
     return reply.send({
@@ -225,13 +223,11 @@ async function resolveNote(request, reply) {
   }
 
   try {
-    const note = await notesService.setResolvedState({
+    const note = await notesService.resolveNote({
       noteId,
-      actorUserId: request.user.id,
-      actorRole: request.user.role,
-      actorLocationId: request.user.locationId,
+      locationId: request.user.locationId,
+      userId: request.user.id,
       resolved: parsed.data.resolved,
-      ownerMode: isOwner(request.user),
     });
 
     return reply.send({
@@ -252,12 +248,10 @@ async function deleteNote(request, reply) {
   }
 
   try {
-    const note = await notesService.softDeleteNote({
+    const note = await notesService.deleteNote({
       noteId,
-      actorUserId: request.user.id,
-      actorRole: request.user.role,
-      actorLocationId: request.user.locationId,
-      ownerMode: isOwner(request.user),
+      locationId: request.user.locationId,
+      userId: request.user.id,
     });
 
     return reply.send({
