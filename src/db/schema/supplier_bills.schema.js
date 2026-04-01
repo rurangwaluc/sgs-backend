@@ -34,13 +34,6 @@ const supplierBills = pgTable(
     totalAmount: integer("total_amount").notNull(),
     paidAmount: integer("paid_amount").notNull().default(0),
 
-    /**
-     * DRAFT           - prepared but not yet operational
-     * OPEN            - unpaid
-     * PARTIALLY_PAID  - has payment(s), not fully settled
-     * PAID            - fully settled
-     * VOID            - operationally cancelled
-     */
     status: varchar("status", { length: 20 }).notNull().default("OPEN"),
 
     issuedDate: date("issued_date").defaultNow(),
@@ -117,7 +110,6 @@ const supplierBillPayments = pgTable(
 
     amount: integer("amount").notNull(),
 
-    // CASH / MOMO / BANK / CARD / OTHER
     method: varchar("method", { length: 20 }).notNull(),
 
     reference: varchar("reference", { length: 120 }),

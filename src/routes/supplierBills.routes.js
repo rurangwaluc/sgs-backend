@@ -1,6 +1,7 @@
+"use strict";
+
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
-
 const {
   listSupplierBills,
   getSupplierBill,
@@ -13,21 +14,27 @@ const {
 
 function supplierBillsRoutes(app, _opts, done) {
   app.get(
+    "/supplier-bills/summary",
+    { preHandler: [requirePermission(ACTIONS.SUPPLIER_REPORT_VIEW)] },
+    supplierSummary,
+  );
+
+  app.get(
     "/supplier-bills",
     { preHandler: [requirePermission(ACTIONS.SUPPLIER_BILL_VIEW)] },
     listSupplierBills,
-  );
-
-  app.post(
-    "/supplier-bills",
-    { preHandler: [requirePermission(ACTIONS.SUPPLIER_BILL_CREATE)] },
-    createSupplierBill,
   );
 
   app.get(
     "/supplier-bills/:id",
     { preHandler: [requirePermission(ACTIONS.SUPPLIER_BILL_VIEW)] },
     getSupplierBill,
+  );
+
+  app.post(
+    "/supplier-bills",
+    { preHandler: [requirePermission(ACTIONS.SUPPLIER_BILL_CREATE)] },
+    createSupplierBill,
   );
 
   app.patch(
@@ -44,14 +51,10 @@ function supplierBillsRoutes(app, _opts, done) {
 
   app.post(
     "/supplier-bills/:id/payments",
-    { preHandler: [requirePermission(ACTIONS.SUPPLIER_BILL_PAYMENT_CREATE)] },
+    {
+      preHandler: [requirePermission(ACTIONS.SUPPLIER_BILL_PAYMENT_CREATE)],
+    },
     createSupplierBillPayment,
-  );
-
-  app.get(
-    "/supplier/summary",
-    { preHandler: [requirePermission(ACTIONS.SUPPLIER_REPORT_VIEW)] },
-    supplierSummary,
   );
 
   done();

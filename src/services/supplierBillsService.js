@@ -1,330 +1,874 @@
+"use strict";
+
+const { and, desc, eq, sql } = require("drizzle-orm");
+
 const { db } = require("../config/db");
-const { and, desc, eq } = require("drizzle-orm");
-
+const AUDIT = require("../audit/actions");
+const { safeLogAudit } = require("./auditService");
 const { suppliers } = require("../db/schema/suppliers.schema");
-const { supplierBills } = require("../db/schema/supplier_bills.schema");
 const {
+  supplierBills,
   supplierBillItems,
-} = require("../db/schema/supplier_bill_items.schema");
-const { supplierPayments } = require("../db/schema/supplier_payments.schema");
+  supplierBillPayments,
+} = require("../db/schema/supplier_bills.schema");
+const {
+  supplierBillCreateSchema,
+  supplierBillUpdateSchema,
+  supplierBillPaymentCreateSchema,
+} = require("../validators/supplierBills.schema");
 
-function toMoneyInt(x) {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return 0;
-  return Math.round(n);
+function toInt(v, def = null) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : def;
 }
 
-function cleanStr(x) {
-  const s = x == null ? "" : String(x).trim();
+function cleanStr(v) {
+  const s = v == null ? "" : String(v).trim();
   return s || null;
 }
 
-function parseDateOrNull(s) {
-  const v = cleanStr(s);
-  if (!v) return null;
-  // expecting YYYY-MM-DD (or ISO). DB accepts string for date columns via drizzle.
-  return v;
+function cleanDate(v) {
+  const s = cleanStr(v);
+  return s || null;
 }
 
-function billStatusFromAmounts(total, paid) {
-  if (total <= 0) return "PAID";
-  if (paid <= 0) return "OPEN";
-  if (paid >= total) return "PAID";
-  return "PARTIALLY_PAID";
+function moneyInt(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.trunc(n));
 }
 
-async function createSupplierBill({ user, payload }) {
-  const supplierId = Number(payload.supplierId);
-  if (!Number.isInteger(supplierId) || supplierId <= 0) {
-    const err = new Error("Invalid supplierId");
-    err.statusCode = 400;
-    throw err;
-  }
+function normalizeCurrency(v, fallback = "RWF") {
+  const s = String(v || fallback)
+    .trim()
+    .toUpperCase()
+    .slice(0, 8);
+  return s || fallback;
+}
 
-  const sup = await db
-    .select()
-    .from(suppliers)
-    .where(eq(suppliers.id, supplierId))
-    .limit(1);
-  if (!sup?.[0]) {
-    const err = new Error("Supplier not found");
-    err.statusCode = 404;
-    throw err;
-  }
+function normalizeMethod(v, fallback = "BANK") {
+  const s = String(v || fallback)
+    .trim()
+    .toUpperCase()
+    .slice(0, 20);
+  return s || fallback;
+}
 
-  const items = Array.isArray(payload.items) ? payload.items : [];
-  if (!items.length) {
-    const err = new Error("Items are required");
-    err.statusCode = 400;
-    throw err;
-  }
+function computeTotalsFromItems(items) {
+  const safeItems = Array.isArray(items) ? items : [];
 
-  const normalizedItems = items.map((it) => {
-    const qty = Number(it?.qty || 0);
-    if (!Number.isInteger(qty) || qty <= 0) {
-      const err = new Error("Each item qty must be a positive integer");
-      err.statusCode = 400;
-      throw err;
-    }
-    const unitCost = toMoneyInt(it?.unitCost);
-    const lineTotal = toMoneyInt(qty * unitCost);
+  const lines = safeItems.map((it) => {
+    const qty = moneyInt(it.qty);
+    const unitCost = moneyInt(it.unitCost);
+    const lineTotal = qty * unitCost;
+
     return {
-      productId: it?.productId != null ? Number(it.productId) : null,
-      productName: String(it?.productName || "").trim() || "Item",
+      productId:
+        it.productId != null
+          ? Math.trunc(Number(it.productId) || 0) || null
+          : null,
+      description: String(it.description || "").trim() || "Item",
       qty,
       unitCost,
       lineTotal,
     };
   });
 
-  const totalAmount = normalizedItems.reduce(
-    (a, b) => a + (Number(b.lineTotal) || 0),
+  const totalAmount = lines.reduce(
+    (sum, line) => sum + Number(line.lineTotal || 0),
     0,
   );
 
-  const locationId =
-    payload.locationId != null
-      ? Number(payload.locationId)
-      : user?.locationId != null
-        ? Number(user.locationId)
-        : null;
+  return { lines, totalAmount };
+}
 
-  const initialPayment = payload.initialPayment || null;
-  const initialPaid = initialPayment?.amount
-    ? toMoneyInt(initialPayment.amount)
-    : 0;
+function deriveBillStatus({ totalAmount, paidAmount, requestedStatus }) {
+  const total = moneyInt(totalAmount);
+  const paid = moneyInt(paidAmount);
+  const requested = String(requestedStatus || "")
+    .trim()
+    .toUpperCase();
 
-  const paidAmount = Math.min(initialPaid, totalAmount);
-  const balanceDue = Math.max(0, totalAmount - paidAmount);
-  const status = billStatusFromAmounts(totalAmount, paidAmount);
+  if (requested === "VOID") return "VOID";
+  if (requested === "DRAFT" && paid <= 0) return "DRAFT";
+  if (paid <= 0) return "OPEN";
+  if (paid >= total) return "PAID";
+  return "PARTIALLY_PAID";
+}
 
-  const createdBy = user?.id != null ? Number(user.id) : null;
+function ensurePositiveTotal(totalAmount) {
+  if (!Number.isInteger(totalAmount) || totalAmount <= 0) {
+    const err = new Error("totalAmount must be > 0");
+    err.statusCode = 400;
+    throw err;
+  }
+}
 
-  return await db.transaction(async (tx) => {
-    const billRows = await tx
-      .insert(supplierBills)
-      .values({
-        supplierId,
-        locationId,
-        reference: cleanStr(payload.reference),
-        currency: String(payload.currency || "RWF")
-          .trim()
-          .toUpperCase(),
-        status,
-        totalAmount,
-        paidAmount,
-        balanceDue,
-        billDate: parseDateOrNull(payload.billDate),
-        dueDate: parseDateOrNull(payload.dueDate),
-        notes: cleanStr(payload.notes),
-        createdBy,
-        updatedAt: new Date(),
-      })
-      .returning();
+async function getSupplierOrThrow(supplierId) {
+  const sid = Number(supplierId);
+  if (!Number.isInteger(sid) || sid <= 0) {
+    const err = new Error("Invalid supplierId");
+    err.statusCode = 400;
+    throw err;
+  }
 
-    const bill = billRows?.[0];
-    if (!bill?.id) {
-      const err = new Error("Failed to create supplier bill");
-      err.statusCode = 500;
-      throw err;
-    }
+  const [row] = await db
+    .select({
+      id: suppliers.id,
+      name: suppliers.name,
+      isActive: suppliers.isActive,
+      defaultCurrency: suppliers.defaultCurrency,
+    })
+    .from(suppliers)
+    .where(eq(suppliers.id, sid));
 
-    await tx.insert(supplierBillItems).values(
-      normalizedItems.map((it) => ({
-        supplierBillId: bill.id,
-        productId: it.productId,
-        productName: it.productName,
-        qty: it.qty,
-        unitCost: it.unitCost,
-        lineTotal: it.lineTotal,
-      })),
-    );
+  if (!row) {
+    const err = new Error("Supplier not found");
+    err.statusCode = 404;
+    throw err;
+  }
 
-    let paymentRow = null;
-    if (paidAmount > 0) {
-      const pRows = await tx
-        .insert(supplierPayments)
-        .values({
-          supplierBillId: bill.id,
-          supplierId,
-          locationId,
-          amount: paidAmount,
-          method: String(initialPayment?.method || "BANK")
-            .trim()
-            .toUpperCase(),
-          reference: cleanStr(initialPayment?.reference),
-          note: cleanStr(initialPayment?.note),
-          paidAt: cleanStr(initialPayment?.paidAt)
-            ? initialPayment.paidAt
-            : new Date(),
-          createdBy,
-        })
-        .returning();
+  if (!row.isActive) {
+    const err = new Error("Supplier is inactive");
+    err.statusCode = 409;
+    throw err;
+  }
 
-      paymentRow = pRows?.[0] || null;
-    }
+  return row;
+}
 
-    const full = await getSupplierBillById({ id: bill.id, tx });
-    return { bill: full, initialPayment: paymentRow };
-  });
+async function getScopedBillOrThrow({ billId, locationId, tx = db }) {
+  const id = Number(billId);
+  const lid = Number(locationId);
+
+  if (!Number.isInteger(id) || id <= 0) {
+    const err = new Error("Invalid bill id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!Number.isInteger(lid) || lid <= 0) {
+    const err = new Error("Invalid location id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const [bill] = await tx
+    .select()
+    .from(supplierBills)
+    .where(and(eq(supplierBills.id, id), eq(supplierBills.locationId, lid)));
+
+  if (!bill) {
+    const err = new Error("Bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  return bill;
 }
 
 async function listSupplierBills({
+  locationId,
+  q,
   supplierId,
   status,
   limit = 50,
   offset = 0,
 }) {
-  const where = [];
-  if (supplierId != null)
-    where.push(eq(supplierBills.supplierId, Number(supplierId)));
-  if (status)
-    where.push(eq(supplierBills.status, String(status).trim().toUpperCase()));
+  const lid = Number(locationId);
+  if (!Number.isInteger(lid) || lid <= 0) {
+    const err = new Error("Invalid location id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const query = String(q || "").trim();
+  const sid = supplierId ? Number(supplierId) : null;
+  const st = String(status || "")
+    .trim()
+    .toUpperCase();
+  const lim = Math.max(1, Math.min(100, toInt(limit, 50) || 50));
+  const off = Math.max(0, toInt(offset, 0) || 0);
+
+  const where = [eq(supplierBills.locationId, lid)];
+
+  if (sid && Number.isInteger(sid) && sid > 0) {
+    where.push(eq(supplierBills.supplierId, sid));
+  }
+
+  if (st) {
+    where.push(eq(supplierBills.status, st));
+  }
+
+  if (query) {
+    const like = `%${query}%`;
+    where.push(sql`(
+      ${supplierBills.billNo} ILIKE ${like}
+      OR ${supplierBills.note} ILIKE ${like}
+      OR ${suppliers.name} ILIKE ${like}
+    )`);
+  }
 
   const rows = await db
-    .select()
+    .select({
+      id: supplierBills.id,
+      supplierId: supplierBills.supplierId,
+      locationId: supplierBills.locationId,
+      supplierName: suppliers.name,
+      billNo: supplierBills.billNo,
+      currency: supplierBills.currency,
+      totalAmount: supplierBills.totalAmount,
+      paidAmount: supplierBills.paidAmount,
+      balance:
+        sql`GREATEST(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)::int`.as(
+          "balance",
+        ),
+      status: supplierBills.status,
+      issuedDate: supplierBills.issuedDate,
+      dueDate: supplierBills.dueDate,
+      note: supplierBills.note,
+      createdByUserId: supplierBills.createdByUserId,
+      createdAt: supplierBills.createdAt,
+      updatedAt: supplierBills.updatedAt,
+      isOverdue: sql`
+        CASE
+          WHEN ${supplierBills.dueDate} IS NOT NULL
+           AND ${supplierBills.dueDate} < CURRENT_DATE
+           AND ${supplierBills.status} NOT IN ('PAID', 'VOID')
+          THEN true
+          ELSE false
+        END
+      `.as("isOverdue"),
+      daysOverdue: sql`
+        CASE
+          WHEN ${supplierBills.dueDate} IS NOT NULL
+           AND ${supplierBills.dueDate} < CURRENT_DATE
+           AND ${supplierBills.status} NOT IN ('PAID', 'VOID')
+          THEN (CURRENT_DATE - ${supplierBills.dueDate})::int
+          ELSE 0
+        END
+      `.as("daysOverdue"),
+    })
     .from(supplierBills)
-    .where(where.length ? and(...where) : undefined)
+    .leftJoin(suppliers, eq(suppliers.id, supplierBills.supplierId))
+    .where(and(...where))
     .orderBy(desc(supplierBills.id))
-    .limit(Number(limit) || 50)
-    .offset(Number(offset) || 0);
+    .limit(lim)
+    .offset(off);
 
   return rows || [];
 }
 
-async function getSupplierBillById({ id, tx } = {}) {
+async function getSupplierBill({ id, locationId }) {
   const bid = Number(id);
-  if (!Number.isInteger(bid) || bid <= 0) return null;
+  const lid = Number(locationId);
 
-  const q = tx || db;
-
-  const billRows = await q
-    .select()
-    .from(supplierBills)
-    .where(eq(supplierBills.id, bid))
-    .limit(1);
-  const bill = billRows?.[0] || null;
-  if (!bill) return null;
-
-  const items = await q
-    .select()
-    .from(supplierBillItems)
-    .where(eq(supplierBillItems.supplierBillId, bid))
-    .orderBy(desc(supplierBillItems.id));
-
-  const payments = await q
-    .select()
-    .from(supplierPayments)
-    .where(eq(supplierPayments.supplierBillId, bid))
-    .orderBy(desc(supplierPayments.id));
-
-  return { ...bill, items: items || [], payments: payments || [] };
-}
-
-async function addSupplierBillPayment({ user, billId, payload }) {
-  const bid = Number(billId);
   if (!Number.isInteger(bid) || bid <= 0) {
     const err = new Error("Invalid bill id");
     err.statusCode = 400;
     throw err;
   }
 
-  const amount = toMoneyInt(payload.amount);
-  if (amount <= 0) {
-    const err = new Error("Amount must be > 0");
+  if (!Number.isInteger(lid) || lid <= 0) {
+    const err = new Error("Invalid location id");
     err.statusCode = 400;
     throw err;
   }
 
-  const createdBy = user?.id != null ? Number(user.id) : null;
+  const [bill] = await db
+    .select({
+      id: supplierBills.id,
+      supplierId: supplierBills.supplierId,
+      locationId: supplierBills.locationId,
+      supplierName: suppliers.name,
+      billNo: supplierBills.billNo,
+      currency: supplierBills.currency,
+      totalAmount: supplierBills.totalAmount,
+      paidAmount: supplierBills.paidAmount,
+      balance:
+        sql`GREATEST(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)::int`.as(
+          "balance",
+        ),
+      status: supplierBills.status,
+      issuedDate: supplierBills.issuedDate,
+      dueDate: supplierBills.dueDate,
+      note: supplierBills.note,
+      createdByUserId: supplierBills.createdByUserId,
+      createdAt: supplierBills.createdAt,
+      updatedAt: supplierBills.updatedAt,
+      isOverdue: sql`
+        CASE
+          WHEN ${supplierBills.dueDate} IS NOT NULL
+           AND ${supplierBills.dueDate} < CURRENT_DATE
+           AND ${supplierBills.status} NOT IN ('PAID', 'VOID')
+          THEN true
+          ELSE false
+        END
+      `.as("isOverdue"),
+      daysOverdue: sql`
+        CASE
+          WHEN ${supplierBills.dueDate} IS NOT NULL
+           AND ${supplierBills.dueDate} < CURRENT_DATE
+           AND ${supplierBills.status} NOT IN ('PAID', 'VOID')
+          THEN (CURRENT_DATE - ${supplierBills.dueDate})::int
+          ELSE 0
+        END
+      `.as("daysOverdue"),
+    })
+    .from(supplierBills)
+    .leftJoin(suppliers, eq(suppliers.id, supplierBills.supplierId))
+    .where(and(eq(supplierBills.id, bid), eq(supplierBills.locationId, lid)));
 
-  return await db.transaction(async (tx) => {
-    const billRows = await tx
-      .select()
-      .from(supplierBills)
-      .where(eq(supplierBills.id, bid))
-      .limit(1);
-    const bill = billRows?.[0];
-    if (!bill) {
-      const err = new Error("Supplier bill not found");
-      err.statusCode = 404;
-      throw err;
-    }
+  if (!bill) {
+    const err = new Error("Bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
 
-    const total = Number(bill.totalAmount || 0) || 0;
-    const alreadyPaid = Number(bill.paidAmount || 0) || 0;
-    const remaining = Math.max(0, total - alreadyPaid);
+  const items = await db
+    .select()
+    .from(supplierBillItems)
+    .where(eq(supplierBillItems.billId, bid))
+    .orderBy(desc(supplierBillItems.id));
 
-    if (remaining <= 0) {
-      const err = new Error("This bill is already fully paid");
-      err.statusCode = 400;
-      throw err;
-    }
+  const payments = await db
+    .select()
+    .from(supplierBillPayments)
+    .where(eq(supplierBillPayments.billId, bid))
+    .orderBy(desc(supplierBillPayments.id));
 
-    const payNow = Math.min(amount, remaining);
-    const newPaid = alreadyPaid + payNow;
-    const newBalance = Math.max(0, total - newPaid);
-    const newStatus = billStatusFromAmounts(total, newPaid);
+  return { bill, items, payments };
+}
 
-    const pRows = await tx
-      .insert(supplierPayments)
+async function createSupplierBill({ actorUser, payload }) {
+  const parsed = supplierBillCreateSchema.safeParse(payload || {});
+  if (!parsed.success) {
+    const err = new Error(
+      parsed.error.issues?.[0]?.message || "Invalid payload",
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const data = parsed.data;
+  const locationId =
+    data.locationId != null
+      ? Number(data.locationId)
+      : Number(actorUser?.locationId);
+
+  if (!Number.isInteger(locationId) || locationId <= 0) {
+    const err = new Error("Invalid location id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const supplier = await getSupplierOrThrow(data.supplierId);
+
+  let totalAmount = data.totalAmount != null ? moneyInt(data.totalAmount) : 0;
+  let lines = [];
+
+  if (Array.isArray(data.items) && data.items.length > 0) {
+    const computed = computeTotalsFromItems(data.items);
+    totalAmount = computed.totalAmount;
+    lines = computed.lines;
+  }
+
+  ensurePositiveTotal(totalAmount);
+
+  const finalStatus = deriveBillStatus({
+    totalAmount,
+    paidAmount: 0,
+    requestedStatus: data.status,
+  });
+
+  const createdByUserId = actorUser?.id ? Number(actorUser.id) : null;
+
+  const result = await db.transaction(async (tx) => {
+    const [bill] = await tx
+      .insert(supplierBills)
       .values({
-        supplierBillId: bid,
-        supplierId: Number(bill.supplierId),
-        locationId: bill.locationId != null ? Number(bill.locationId) : null,
-        amount: payNow,
-        method: String(payload.method || "BANK")
-          .trim()
-          .toUpperCase(),
-        reference: cleanStr(payload.reference),
-        note: cleanStr(payload.note),
-        paidAt: cleanStr(payload.paidAt) ? payload.paidAt : new Date(),
-        createdBy,
+        supplierId: supplier.id,
+        locationId,
+        billNo: cleanStr(data.billNo),
+        currency: normalizeCurrency(data.currency, supplier.defaultCurrency),
+        totalAmount,
+        paidAmount: 0,
+        status: finalStatus,
+        issuedDate: cleanDate(data.issuedDate),
+        dueDate: cleanDate(data.dueDate),
+        note: cleanStr(data.note),
+        createdByUserId,
+        updatedAt: sql`now()`,
       })
       .returning();
+
+    if (lines.length > 0) {
+      await tx.insert(supplierBillItems).values(
+        lines.map((x) => ({
+          billId: bill.id,
+          productId: x.productId || null,
+          description: x.description,
+          qty: x.qty,
+          unitCost: x.unitCost,
+          lineTotal: x.lineTotal,
+        })),
+      );
+    }
+
+    return bill;
+  });
+
+  await safeLogAudit({
+    locationId,
+    userId: createdByUserId,
+    action: AUDIT.SUPPLIER_BILL_CREATE,
+    entity: "supplier_bill",
+    entityId: result.id,
+    description: `Created supplier bill #${result.id}`,
+    meta: {
+      supplierId: result.supplierId,
+      status: result.status,
+      totalAmount: result.totalAmount,
+      currency: result.currency,
+    },
+  });
+
+  return result;
+}
+
+async function updateSupplierBill({ id, actorUser, payload }) {
+  const billId = Number(id);
+  const locationId = Number(actorUser?.locationId);
+
+  if (!Number.isInteger(billId) || billId <= 0) {
+    const err = new Error("Invalid bill id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!Number.isInteger(locationId) || locationId <= 0) {
+    const err = new Error("Invalid location id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const parsed = supplierBillUpdateSchema.safeParse(payload || {});
+  if (!parsed.success) {
+    const err = new Error(
+      parsed.error.issues?.[0]?.message || "Invalid payload",
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const data = parsed.data;
+  const existing = await getScopedBillOrThrow({ billId, locationId });
+
+  const currentStatus = String(existing.status || "").toUpperCase();
+  if (currentStatus === "PAID" || currentStatus === "VOID") {
+    const err = new Error(`Bill is ${currentStatus}; editing is locked.`);
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const hasPayments = Number(existing.paidAmount || 0) > 0;
+  const wantsStructuralChange =
+    data.billNo !== undefined ||
+    data.currency !== undefined ||
+    data.totalAmount !== undefined ||
+    data.issuedDate !== undefined ||
+    data.items !== undefined ||
+    data.status !== undefined;
+
+  if (hasPayments && wantsStructuralChange) {
+    const err = new Error(
+      "Bill already has payment history. Only due date and note can be changed now.",
+    );
+    err.statusCode = 409;
+    throw err;
+  }
+
+  let nextTotalAmount = null;
+  let lines = null;
+
+  if (Array.isArray(data.items)) {
+    const computed = computeTotalsFromItems(data.items);
+    nextTotalAmount = computed.totalAmount;
+    lines = computed.lines;
+    ensurePositiveTotal(nextTotalAmount);
+  } else if (data.totalAmount != null) {
+    nextTotalAmount = moneyInt(data.totalAmount);
+    ensurePositiveTotal(nextTotalAmount);
+  }
+
+  const requestedStatus =
+    data.status != null ? String(data.status).toUpperCase() : undefined;
+
+  const nextStatus =
+    requestedStatus != null
+      ? deriveBillStatus({
+          totalAmount:
+            nextTotalAmount != null ? nextTotalAmount : existing.totalAmount,
+          paidAmount: existing.paidAmount,
+          requestedStatus,
+        })
+      : undefined;
+
+  const [row] = await db
+    .update(supplierBills)
+    .set({
+      ...(data.billNo !== undefined ? { billNo: cleanStr(data.billNo) } : {}),
+      ...(data.currency !== undefined
+        ? {
+            currency: normalizeCurrency(
+              data.currency,
+              existing.currency || "RWF",
+            ),
+          }
+        : {}),
+      ...(nextTotalAmount != null ? { totalAmount: nextTotalAmount } : {}),
+      ...(data.issuedDate !== undefined
+        ? { issuedDate: cleanDate(data.issuedDate) }
+        : {}),
+      ...(data.dueDate !== undefined
+        ? { dueDate: cleanDate(data.dueDate) }
+        : {}),
+      ...(data.note !== undefined ? { note: cleanStr(data.note) } : {}),
+      ...(nextStatus !== undefined ? { status: nextStatus } : {}),
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(supplierBills.id, billId),
+        eq(supplierBills.locationId, locationId),
+      ),
+    )
+    .returning();
+
+  if (!row) {
+    const err = new Error("Bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (lines) {
+    await db
+      .delete(supplierBillItems)
+      .where(eq(supplierBillItems.billId, billId));
+
+    if (lines.length > 0) {
+      await db.insert(supplierBillItems).values(
+        lines.map((x) => ({
+          billId,
+          productId: x.productId || null,
+          description: x.description,
+          qty: x.qty,
+          unitCost: x.unitCost,
+          lineTotal: x.lineTotal,
+        })),
+      );
+    }
+  }
+
+  await safeLogAudit({
+    locationId,
+    userId: actorUser?.id || null,
+    action: AUDIT.SUPPLIER_BILL_UPDATE,
+    entity: "supplier_bill",
+    entityId: row.id,
+    description: `Updated supplier bill #${row.id}`,
+    meta: {
+      supplierId: row.supplierId,
+      status: row.status,
+      totalAmount: row.totalAmount,
+      paidAmount: row.paidAmount,
+    },
+  });
+
+  return row;
+}
+
+async function deleteSupplierBill({ id, actorUser }) {
+  const billId = Number(id);
+  const locationId = Number(actorUser?.locationId);
+
+  if (!Number.isInteger(billId) || billId <= 0) {
+    const err = new Error("Invalid bill id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!Number.isInteger(locationId) || locationId <= 0) {
+    const err = new Error("Invalid location id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const bill = await getScopedBillOrThrow({ billId, locationId });
+
+  if (Number(bill.paidAmount || 0) > 0) {
+    const err = new Error("Bill already has payment history. Void is blocked.");
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const [row] = await db
+    .update(supplierBills)
+    .set({
+      status: "VOID",
+      updatedAt: sql`now()`,
+    })
+    .where(
+      and(
+        eq(supplierBills.id, billId),
+        eq(supplierBills.locationId, locationId),
+      ),
+    )
+    .returning();
+
+  if (!row) {
+    const err = new Error("Bill not found");
+    err.statusCode = 404;
+    throw err;
+  }
+
+  await safeLogAudit({
+    locationId,
+    userId: actorUser?.id || null,
+    action: AUDIT.SUPPLIER_BILL_VOID,
+    entity: "supplier_bill",
+    entityId: row.id,
+    description: `Voided supplier bill #${row.id}`,
+    meta: {
+      supplierId: row.supplierId,
+      status: row.status,
+    },
+  });
+
+  return { bill: row };
+}
+
+async function createSupplierBillPayment({ id, actorUser, payload }) {
+  const billId = Number(id);
+  const locationId = Number(actorUser?.locationId);
+
+  if (!Number.isInteger(billId) || billId <= 0) {
+    const err = new Error("Invalid bill id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!Number.isInteger(locationId) || locationId <= 0) {
+    const err = new Error("Invalid location id");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const parsed = supplierBillPaymentCreateSchema.safeParse(payload || {});
+  if (!parsed.success) {
+    const err = new Error(
+      parsed.error.issues?.[0]?.message || "Invalid payload",
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const data = parsed.data;
+  const amount = moneyInt(data.amount);
+
+  if (!Number.isInteger(amount) || amount <= 0) {
+    const err = new Error("Invalid amount");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const createdByUserId = actorUser?.id ? Number(actorUser.id) : null;
+
+  const result = await db.transaction(async (tx) => {
+    const bill = await getScopedBillOrThrow({ billId, locationId, tx });
+
+    const currentStatus = String(bill.status || "").toUpperCase();
+    if (currentStatus === "VOID") {
+      const err = new Error("Bill is VOID");
+      err.statusCode = 409;
+      throw err;
+    }
+    if (currentStatus === "PAID") {
+      const err = new Error("Bill is already fully paid");
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const total = Number(bill.totalAmount || 0);
+    const paid = Number(bill.paidAmount || 0);
+    const balance = Math.max(0, total - paid);
+
+    if (amount > balance) {
+      const err = new Error(`Payment exceeds balance (${balance}).`);
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const [payment] = await tx
+      .insert(supplierBillPayments)
+      .values({
+        billId,
+        amount,
+        method: normalizeMethod(data.method, "BANK"),
+        reference: cleanStr(data.reference),
+        note: cleanStr(data.note),
+        paidAt: cleanStr(data.paidAt) || undefined,
+        createdByUserId,
+      })
+      .returning();
+
+    const newPaid = paid + amount;
+    const newStatus = deriveBillStatus({
+      totalAmount: total,
+      paidAmount: newPaid,
+      requestedStatus: currentStatus,
+    });
 
     await tx
       .update(supplierBills)
       .set({
         paidAmount: newPaid,
-        balanceDue: newBalance,
         status: newStatus,
-        updatedAt: new Date(),
+        updatedAt: sql`now()`,
       })
-      .where(eq(supplierBills.id, bid));
+      .where(
+        and(
+          eq(supplierBills.id, billId),
+          eq(supplierBills.locationId, locationId),
+        ),
+      );
 
-    const full = await getSupplierBillById({ id: bid, tx });
-    return { bill: full, payment: pRows?.[0] || null };
+    return {
+      payment,
+      bill: {
+        id: billId,
+        paidAmount: newPaid,
+        balance: Math.max(0, total - newPaid),
+        status: newStatus,
+      },
+      auditMeta: {
+        supplierId: bill.supplierId,
+        amount,
+        newPaid,
+        balance: Math.max(0, total - newPaid),
+        status: newStatus,
+      },
+    };
   });
+
+  await safeLogAudit({
+    locationId,
+    userId: createdByUserId,
+    action: AUDIT.SUPPLIER_BILL_PAYMENT_CREATE,
+    entity: "supplier_bill",
+    entityId: billId,
+    description: `Recorded payment on supplier bill #${billId}`,
+    meta: result.auditMeta,
+  });
+
+  return {
+    payment: result.payment,
+    bill: result.bill,
+  };
 }
 
-async function updateSupplierBillStatus({ billId, status }) {
-  const bid = Number(billId);
-  if (!Number.isInteger(bid) || bid <= 0) return null;
-
-  const st = String(status || "")
-    .trim()
-    .toUpperCase();
-  const ok = ["OPEN", "PARTIALLY_PAID", "PAID", "CANCELLED"].includes(st);
-  if (!ok) {
-    const err = new Error("Invalid status");
+async function supplierSummary({ locationId, supplierId }) {
+  const lid = Number(locationId);
+  if (!Number.isInteger(lid) || lid <= 0) {
+    const err = new Error("Invalid location id");
     err.statusCode = 400;
     throw err;
   }
 
-  const rows = await db
-    .update(supplierBills)
-    .set({ status: st, updatedAt: new Date() })
-    .where(eq(supplierBills.id, bid))
-    .returning();
+  const sid = supplierId ? Number(supplierId) : null;
+  const where = [
+    eq(supplierBills.locationId, lid),
+    sql`${supplierBills.status} <> 'VOID'`,
+  ];
 
-  return rows?.[0] || null;
+  if (sid && Number.isInteger(sid) && sid > 0) {
+    where.push(eq(supplierBills.supplierId, sid));
+  }
+
+  const rows = await db
+    .select({
+      billsCount: sql`count(*)::int`.as("billsCount"),
+      totalAmount: sql`coalesce(sum(${supplierBills.totalAmount}), 0)::int`.as(
+        "totalAmount",
+      ),
+      paidAmount: sql`coalesce(sum(${supplierBills.paidAmount}), 0)::int`.as(
+        "paidAmount",
+      ),
+      openBillsCount:
+        sql`count(*) filter (where ${supplierBills.status} = 'OPEN')::int`.as(
+          "openBillsCount",
+        ),
+      partiallyPaidCount:
+        sql`count(*) filter (where ${supplierBills.status} = 'PARTIALLY_PAID')::int`.as(
+          "partiallyPaidCount",
+        ),
+      paidBillsCount:
+        sql`count(*) filter (where ${supplierBills.status} = 'PAID')::int`.as(
+          "paidBillsCount",
+        ),
+      overdueBillsCount: sql`count(*) filter (
+        where ${supplierBills.dueDate} is not null
+          and ${supplierBills.dueDate} < CURRENT_DATE
+          and ${supplierBills.status} not in ('PAID', 'VOID')
+      )::int`.as("overdueBillsCount"),
+      overdueAmount: sql`coalesce(sum(
+        case
+          when ${supplierBills.dueDate} is not null
+           and ${supplierBills.dueDate} < CURRENT_DATE
+           and ${supplierBills.status} not in ('PAID', 'VOID')
+          then greatest(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)
+          else 0
+        end
+      ), 0)::int`.as("overdueAmount"),
+    })
+    .from(supplierBills)
+    .where(and(...where));
+
+  const r = rows?.[0] || {
+    billsCount: 0,
+    totalAmount: 0,
+    paidAmount: 0,
+    openBillsCount: 0,
+    partiallyPaidCount: 0,
+    paidBillsCount: 0,
+    overdueBillsCount: 0,
+    overdueAmount: 0,
+  };
+
+  const balance = Math.max(
+    0,
+    Number(r.totalAmount || 0) - Number(r.paidAmount || 0),
+  );
+
+  return {
+    billsCount: Number(r.billsCount || 0),
+    totalAmount: Number(r.totalAmount || 0),
+    paidAmount: Number(r.paidAmount || 0),
+    balance,
+    openBillsCount: Number(r.openBillsCount || 0),
+    partiallyPaidCount: Number(r.partiallyPaidCount || 0),
+    paidBillsCount: Number(r.paidBillsCount || 0),
+    overdueBillsCount: Number(r.overdueBillsCount || 0),
+    overdueAmount: Number(r.overdueAmount || 0),
+  };
 }
 
 module.exports = {
-  createSupplierBill,
   listSupplierBills,
-  getSupplierBillById,
-  addSupplierBillPayment,
-  updateSupplierBillStatus,
+  getSupplierBill,
+  createSupplierBill,
+  updateSupplierBill,
+  deleteSupplierBill,
+  createSupplierBillPayment,
+  supplierSummary,
 };

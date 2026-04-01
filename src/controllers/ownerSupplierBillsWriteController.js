@@ -1,203 +1,190 @@
 "use strict";
 
 const {
-  supplierBillCreateSchema,
-  supplierBillUpdateSchema,
-  supplierBillPaymentCreateSchema,
-} = require("../validators/supplierBills.schema");
-const service = require("../services/ownerSupplierBillsWriteService");
-
-async function createOwnerSupplierBill(request, reply) {
-  const parsed = supplierBillCreateSchema.safeParse(request.body || {});
-  if (!parsed.success) {
-    return reply.status(400).send({
-      error: parsed.error.issues?.[0]?.message || "Invalid payload",
-    });
-  }
-
-  try {
-    const out = await service.createOwnerSupplierBill({
-      ownerUserId: request.user.id,
-      ownerLocationId: request.user.locationId,
-      payload: parsed.data,
-    });
-
-    return reply.status(201).send({
-      ok: true,
-      bill: out?.bill || null,
-      items: out?.items || [],
-      payments: out?.payments || [],
-    });
-  } catch (e) {
-    request.log.error({ err: e }, "createOwnerSupplierBill failed");
-
-    if (e.code === "BAD_SUPPLIER_ID") {
-      return reply.status(400).send({ error: "Invalid supplier id" });
-    }
-    if (e.code === "BAD_LOCATION_ID") {
-      return reply.status(400).send({ error: "Invalid location id" });
-    }
-    if (e.code === "SUPPLIER_NOT_FOUND") {
-      return reply.status(404).send({ error: "Supplier not found" });
-    }
-    if (e.code === "LOCATION_NOT_FOUND") {
-      return reply.status(404).send({ error: "Branch not found" });
-    }
-    if (e.code === "BAD_TOTAL") {
-      return reply.status(409).send({ error: e.message });
-    }
-
-    return reply.status(500).send({ error: "Internal Server Error" });
-  }
-}
-
-async function updateOwnerSupplierBill(request, reply) {
-  const billId = Number(request.params?.id);
-  if (!Number.isInteger(billId) || billId <= 0) {
-    return reply.status(400).send({ error: "Invalid bill id" });
-  }
-
-  const parsed = supplierBillUpdateSchema.safeParse(request.body || {});
-  if (!parsed.success) {
-    return reply.status(400).send({
-      error: parsed.error.issues?.[0]?.message || "Invalid payload",
-    });
-  }
-
-  try {
-    const out = await service.updateOwnerSupplierBill({
-      ownerUserId: request.user.id,
-      billId,
-      payload: parsed.data,
-    });
-
-    return reply.send({
-      ok: true,
-      bill: out?.bill || null,
-      items: out?.items || [],
-      payments: out?.payments || [],
-    });
-  } catch (e) {
-    request.log.error({ err: e }, "updateOwnerSupplierBill failed");
-
-    if (e.code === "BAD_BILL_ID") {
-      return reply.status(400).send({ error: "Invalid bill id" });
-    }
-    if (e.code === "BAD_LOCATION_ID") {
-      return reply.status(400).send({ error: "Invalid location id" });
-    }
-    if (e.code === "NOT_FOUND") {
-      return reply.status(404).send({ error: "Supplier bill not found" });
-    }
-    if (e.code === "SUPPLIER_NOT_FOUND") {
-      return reply.status(404).send({ error: "Supplier not found" });
-    }
-    if (e.code === "LOCATION_NOT_FOUND") {
-      return reply.status(404).send({ error: "Branch not found" });
-    }
-    if (
-      e.code === "VOID_LOCKED" ||
-      e.code === "PAID_EXCEEDS_TOTAL" ||
-      e.code === "BAD_TOTAL" ||
-      e.code === "BAD_ITEMS" ||
-      e.code === "USE_VOID_ACTION"
-    ) {
-      return reply.status(409).send({ error: e.message });
-    }
-
-    return reply.status(500).send({ error: "Internal Server Error" });
-  }
-}
-
-async function addOwnerSupplierBillPayment(request, reply) {
-  const billId = Number(request.params?.id);
-  if (!Number.isInteger(billId) || billId <= 0) {
-    return reply.status(400).send({ error: "Invalid bill id" });
-  }
-
-  const parsed = supplierBillPaymentCreateSchema.safeParse(request.body || {});
-  if (!parsed.success) {
-    return reply.status(400).send({
-      error: parsed.error.issues?.[0]?.message || "Invalid payload",
-    });
-  }
-
-  try {
-    const out = await service.addOwnerSupplierBillPayment({
-      ownerUserId: request.user.id,
-      billId,
-      payload: parsed.data,
-    });
-
-    return reply.send({
-      ok: true,
-      bill: out?.bill || null,
-      items: out?.items || [],
-      payments: out?.payments || [],
-    });
-  } catch (e) {
-    request.log.error({ err: e }, "addOwnerSupplierBillPayment failed");
-
-    if (e.code === "BAD_BILL_ID") {
-      return reply.status(400).send({ error: "Invalid bill id" });
-    }
-    if (e.code === "NOT_FOUND") {
-      return reply.status(404).send({ error: "Supplier bill not found" });
-    }
-    if (
-      e.code === "VOID_LOCKED" ||
-      e.code === "ALREADY_PAID" ||
-      e.code === "EXCEEDS_BALANCE" ||
-      e.code === "BAD_AMOUNT"
-    ) {
-      return reply.status(409).send({ error: e.message });
-    }
-
-    return reply.status(500).send({ error: "Internal Server Error" });
-  }
-}
-
-async function voidOwnerSupplierBill(request, reply) {
-  const billId = Number(request.params?.id);
-  if (!Number.isInteger(billId) || billId <= 0) {
-    return reply.status(400).send({ error: "Invalid bill id" });
-  }
-
-  try {
-    const out = await service.voidOwnerSupplierBill({
-      ownerUserId: request.user.id,
-      billId,
-      reason: request.body?.reason,
-    });
-
-    return reply.send({
-      ok: true,
-      bill: out?.bill || null,
-      items: out?.items || [],
-      payments: out?.payments || [],
-    });
-  } catch (e) {
-    request.log.error({ err: e }, "voidOwnerSupplierBill failed");
-
-    if (e.code === "BAD_BILL_ID") {
-      return reply.status(400).send({ error: "Invalid bill id" });
-    }
-    if (e.code === "NOT_FOUND") {
-      return reply.status(404).send({ error: "Supplier bill not found" });
-    }
-    if (e.code === "HAS_PAYMENTS") {
-      return reply.status(409).send({
-        error: "Cannot void a bill that already has payments",
-      });
-    }
-
-    return reply.status(500).send({ error: "Internal Server Error" });
-  }
-}
-
-module.exports = {
   createOwnerSupplierBill,
   updateOwnerSupplierBill,
   addOwnerSupplierBillPayment,
   voidOwnerSupplierBill,
+} = require("../services/ownerSupplierBillsWriteService");
+
+function toInt(v, def = null) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : def;
+}
+
+function cleanStr(v) {
+  const s = v == null ? "" : String(v).trim();
+  return s || null;
+}
+
+function sendValidationError(reply, parsed, fallback = "Invalid payload") {
+  return reply.status(400).send({
+    error: fallback,
+    details: parsed?.error?.flatten ? parsed.error.flatten() : undefined,
+  });
+}
+
+function sendServiceError(request, reply, error, logMessage) {
+  request.log.error({ err: error }, logMessage);
+
+  if (
+    error?.code === "BAD_SUPPLIER_ID" ||
+    error?.code === "BAD_LOCATION_ID" ||
+    error?.code === "BAD_TOTAL" ||
+    error?.code === "BAD_ITEMS" ||
+    error?.code === "BAD_BILL_ID" ||
+    error?.code === "BAD_AMOUNT" ||
+    error?.code === "USE_VOID_ACTION"
+  ) {
+    return reply.status(400).send({ error: error.message });
+  }
+
+  if (
+    error?.code === "SUPPLIER_NOT_FOUND" ||
+    error?.code === "LOCATION_NOT_FOUND" ||
+    error?.code === "NOT_FOUND"
+  ) {
+    return reply.status(404).send({ error: error.message });
+  }
+
+  if (
+    error?.code === "VOID_LOCKED" ||
+    error?.code === "PAID_EXCEEDS_TOTAL" ||
+    error?.code === "ALREADY_PAID" ||
+    error?.code === "EXCEEDS_BALANCE" ||
+    error?.code === "HAS_PAYMENTS"
+  ) {
+    return reply.status(409).send({ error: error.message });
+  }
+
+  return reply.status(error?.statusCode || 500).send({
+    error: error?.message || "Internal Server Error",
+  });
+}
+
+function getOwnerActor(request) {
+  return {
+    ownerUserId: toInt(request.user?.id, null),
+    ownerLocationId: toInt(request.user?.locationId, null),
+  };
+}
+
+async function createOwnerSupplierBillHandler(request, reply) {
+  try {
+    const actor = getOwnerActor(request);
+
+    const result = await createOwnerSupplierBill({
+      ...actor,
+      payload: request.body || {},
+    });
+
+    return reply.status(201).send({
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    return sendServiceError(
+      request,
+      reply,
+      error,
+      "createOwnerSupplierBillHandler failed",
+    );
+  }
+}
+
+async function updateOwnerSupplierBillHandler(request, reply) {
+  try {
+    const billId = toInt(request.params?.id, null);
+
+    if (!billId || billId <= 0) {
+      return reply.status(400).send({ error: "Invalid supplier bill id" });
+    }
+
+    const actor = getOwnerActor(request);
+
+    const result = await updateOwnerSupplierBill({
+      ownerUserId: actor.ownerUserId,
+      billId,
+      payload: request.body || {},
+    });
+
+    return reply.send({
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    return sendServiceError(
+      request,
+      reply,
+      error,
+      "updateOwnerSupplierBillHandler failed",
+    );
+  }
+}
+
+async function addOwnerSupplierBillPaymentHandler(request, reply) {
+  try {
+    const billId = toInt(request.params?.id, null);
+
+    if (!billId || billId <= 0) {
+      return reply.status(400).send({ error: "Invalid supplier bill id" });
+    }
+
+    const actor = getOwnerActor(request);
+
+    const result = await addOwnerSupplierBillPayment({
+      ownerUserId: actor.ownerUserId,
+      billId,
+      payload: request.body || {},
+    });
+
+    return reply.status(201).send({
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    return sendServiceError(
+      request,
+      reply,
+      error,
+      "addOwnerSupplierBillPaymentHandler failed",
+    );
+  }
+}
+
+async function voidOwnerSupplierBillHandler(request, reply) {
+  try {
+    const billId = toInt(request.params?.id, null);
+
+    if (!billId || billId <= 0) {
+      return reply.status(400).send({ error: "Invalid supplier bill id" });
+    }
+
+    const actor = getOwnerActor(request);
+
+    const result = await voidOwnerSupplierBill({
+      ownerUserId: actor.ownerUserId,
+      billId,
+      reason: cleanStr(request.body?.reason),
+    });
+
+    return reply.send({
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    return sendServiceError(
+      request,
+      reply,
+      error,
+      "voidOwnerSupplierBillHandler failed",
+    );
+  }
+}
+
+module.exports = {
+  createOwnerSupplierBill: createOwnerSupplierBillHandler,
+  updateOwnerSupplierBill: updateOwnerSupplierBillHandler,
+  addOwnerSupplierBillPayment: addOwnerSupplierBillPaymentHandler,
+  voidOwnerSupplierBill: voidOwnerSupplierBillHandler,
 };

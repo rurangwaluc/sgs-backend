@@ -1,6 +1,7 @@
+"use strict";
+
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
-
 const {
   getOwnerSuppliersSummary,
   listOwnerSuppliers,

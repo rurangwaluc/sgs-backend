@@ -1,71 +1,101 @@
 "use strict";
 
-const service = require("../services/ownerSuppliersService");
+const ownerSuppliersService = require("../services/ownerSuppliersService");
 
-async function getOwnerSuppliersSummary(request, reply) {
+function toInt(v, fallback = null) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function handleServiceError(req, reply, error, logMessage) {
+  req.log.error({ err: error }, logMessage);
+
+  if (error?.code === "BAD_SUPPLIER_ID" || error?.code === "BAD_LOCATION_ID") {
+    return reply.status(400).send({ error: error.message });
+  }
+
+  if (error?.code === "SUPPLIER_NOT_FOUND") {
+    return reply.status(404).send({ error: error.message });
+  }
+
+  return reply.status(500).send({ error: "Internal Server Error" });
+}
+
+function buildFilters(query = {}) {
+  return {
+    q: query.q,
+    locationId: query.locationId,
+    sourceType: query.sourceType,
+    active: query.active,
+    status: query.status,
+    dateFrom: query.dateFrom,
+    dateTo: query.dateTo,
+    limit: query.limit,
+    offset: query.offset,
+  };
+}
+
+async function getOwnerSuppliersSummary(req, reply) {
   try {
-    const summary = await service.getOwnerSuppliersSummary({
-      q: request.query?.q || null,
-      locationId: request.query?.locationId || null,
-      sourceType: request.query?.sourceType || null,
-      active: request.query?.active,
-      dateFrom: request.query?.dateFrom || null,
-      dateTo: request.query?.dateTo || null,
-    });
+    const summary = await ownerSuppliersService.getOwnerSuppliersSummary(
+      buildFilters(req.query || {}),
+    );
 
-    return reply.send({ ok: true, summary });
-  } catch (e) {
-    request.log.error({ err: e }, "getOwnerSuppliersSummary failed");
-    return reply.status(500).send({
-      error: "Failed to load owner suppliers summary",
-      debug: e?.message || String(e),
+    return reply.send({
+      ok: true,
+      summary,
     });
+  } catch (error) {
+    return handleServiceError(
+      req,
+      reply,
+      error,
+      "getOwnerSuppliersSummary failed",
+    );
   }
 }
 
-async function listOwnerSuppliers(request, reply) {
+async function listOwnerSuppliers(req, reply) {
   try {
-    const suppliers = await service.listOwnerSuppliers({
-      q: request.query?.q || null,
-      locationId: request.query?.locationId || null,
-      sourceType: request.query?.sourceType || null,
-      active: request.query?.active,
-      dateFrom: request.query?.dateFrom || null,
-      dateTo: request.query?.dateTo || null,
-      limit: request.query?.limit || 50,
-      offset: request.query?.offset || 0,
-    });
+    const rows = await ownerSuppliersService.listOwnerSuppliers(
+      buildFilters(req.query || {}),
+    );
 
-    return reply.send({ ok: true, suppliers });
-  } catch (e) {
-    request.log.error({ err: e }, "listOwnerSuppliers failed");
-    return reply.status(500).send({
-      error: "Failed to load owner suppliers",
-      debug: e?.message || String(e),
+    return reply.send({
+      ok: true,
+      suppliers: rows,
     });
+  } catch (error) {
+    return handleServiceError(req, reply, error, "listOwnerSuppliers failed");
   }
 }
 
-async function getOwnerSupplier(request, reply) {
+async function getOwnerSupplier(req, reply) {
+  const id = toInt(req.params?.id, null);
+  if (!id || id <= 0) {
+    return reply.status(400).send({ error: "Invalid supplier id" });
+  }
+
   try {
-    const supplier = await service.getOwnerSupplierById({
-      id: request.params?.id,
-      locationId: request.query?.locationId || null,
-      dateFrom: request.query?.dateFrom || null,
-      dateTo: request.query?.dateTo || null,
+    const detail = await ownerSuppliersService.getOwnerSupplierById({
+      id,
+      locationId: req.query?.locationId,
+      dateFrom: req.query?.dateFrom,
+      dateTo: req.query?.dateTo,
     });
 
-    if (!supplier) {
+    if (!detail?.supplier) {
       return reply.status(404).send({ error: "Supplier not found" });
     }
 
-    return reply.send({ ok: true, supplier });
-  } catch (e) {
-    request.log.error({ err: e }, "getOwnerSupplier failed");
-    return reply.status(500).send({
-      error: "Failed to load owner supplier",
-      debug: e?.message || String(e),
+    return reply.send({
+      ok: true,
+      supplier: detail.supplier,
+      profile: detail.profile,
+      evaluation: detail.evaluation,
     });
+  } catch (error) {
+    return handleServiceError(req, reply, error, "getOwnerSupplier failed");
   }
 }
 

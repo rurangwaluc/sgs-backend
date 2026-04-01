@@ -1,5 +1,16 @@
+"use strict";
+
+const { and, desc, eq, sql } = require("drizzle-orm");
+
 const { db } = require("../config/db");
-const { sql } = require("drizzle-orm");
+const { suppliers } = require("../db/schema/suppliers.schema");
+const {
+  supplierBills,
+  supplierBillItems,
+  supplierBillPayments,
+} = require("../db/schema/supplier_bills.schema");
+const { locations } = require("../db/schema/locations.schema");
+const { users } = require("../db/schema/users.schema");
 
 function toInt(v, dflt = null) {
   const n = Number(v);
@@ -9,10 +20,6 @@ function toInt(v, dflt = null) {
 function cleanStr(v) {
   const s = v == null ? "" : String(v).trim();
   return s || "";
-}
-
-function rowsOf(result) {
-  return result?.rows || result || [];
 }
 
 async function listOwnerSupplierBills({
@@ -29,87 +36,93 @@ async function listOwnerSupplierBills({
   const query = cleanStr(q);
   const lim = Math.max(1, Math.min(200, toInt(limit, 100) || 100));
   const off = Math.max(0, toInt(offset, 0) || 0);
-  const like = query ? `%${query}%` : null;
 
-  const res = await db.execute(sql`
-    SELECT
-      sb.id,
-      sb.location_id as "locationId",
-      COALESCE(l.name, CONCAT('Branch #', sb.location_id::text)) as "locationName",
-      COALESCE(l.code, '') as "locationCode",
+  const where = [];
 
-      sb.supplier_id as "supplierId",
-      COALESCE(s.name, 'Unknown supplier') as "supplierName",
-      COALESCE(s.default_currency, sb.currency, 'RWF') as "supplierDefaultCurrency",
+  if (locId) {
+    where.push(eq(supplierBills.locationId, locId));
+  }
 
-      COALESCE(sb.bill_no, sb.reference, '') as "billNo",
-      COALESCE(sb.currency, 'RWF') as "currency",
+  if (supId) {
+    where.push(eq(supplierBills.supplierId, supId));
+  }
 
-      COALESCE(sb.total_amount, 0)::int as "totalAmount",
-      COALESCE(sb.paid_amount, 0)::int as "paidAmount",
+  if (st) {
+    where.push(eq(supplierBills.status, st));
+  }
 
-      GREATEST(
-        COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-        0
-      )::int as "balance",
+  if (query) {
+    const like = `%${query}%`;
+    where.push(sql`(
+      ${suppliers.name} ILIKE ${like}
+      OR ${supplierBills.billNo} ILIKE ${like}
+      OR ${supplierBills.note} ILIKE ${like}
+      OR ${locations.name} ILIKE ${like}
+      OR ${locations.code} ILIKE ${like}
+    )`);
+  }
 
-      COALESCE(sb.status, 'OPEN') as "status",
-      COALESCE(sb.issued_date, sb.bill_date) as "issuedDate",
-      sb.due_date as "dueDate",
-      COALESCE(sb.note, sb.notes, '') as "note",
+  const rows = await db
+    .select({
+      id: supplierBills.id,
+      locationId: supplierBills.locationId,
+      locationName: locations.name,
+      locationCode: locations.code,
 
-      COALESCE(sb.created_by_user_id, sb.created_by) as "createdByUserId",
-      COALESCE(u.name, u.email, CONCAT('User #', COALESCE(sb.created_by_user_id, sb.created_by)::text)) as "createdByName",
+      supplierId: supplierBills.supplierId,
+      supplierName: suppliers.name,
+      supplierDefaultCurrency: suppliers.defaultCurrency,
 
-      sb.created_at as "createdAt",
-      sb.updated_at as "updatedAt",
+      billNo: supplierBills.billNo,
+      currency: supplierBills.currency,
 
-      CASE
-        WHEN UPPER(COALESCE(sb.status, '')) IN ('PAID', 'VOID') THEN false
-        WHEN sb.due_date IS NULL THEN false
-        WHEN sb.due_date < CURRENT_DATE THEN true
-        ELSE false
-      END as "isOverdue",
+      totalAmount: supplierBills.totalAmount,
+      paidAmount: supplierBills.paidAmount,
+      balance:
+        sql`GREATEST(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)::int`.as(
+          "balance",
+        ),
 
-      CASE
-        WHEN UPPER(COALESCE(sb.status, '')) IN ('PAID', 'VOID') THEN 0
-        WHEN sb.due_date IS NULL THEN 0
-        WHEN sb.due_date < CURRENT_DATE THEN (CURRENT_DATE - sb.due_date)::int
-        ELSE 0
-      END as "daysOverdue"
+      status: supplierBills.status,
+      issuedDate: supplierBills.issuedDate,
+      dueDate: supplierBills.dueDate,
+      note: supplierBills.note,
 
-    FROM supplier_bills sb
-    LEFT JOIN suppliers s
-      ON s.id = sb.supplier_id
-    LEFT JOIN locations l
-      ON l.id = sb.location_id
-    LEFT JOIN users u
-      ON u.id = COALESCE(sb.created_by_user_id, sb.created_by)
+      createdByUserId: supplierBills.createdByUserId,
+      createdByName: users.name,
 
-    WHERE 1=1
-      ${locId ? sql`AND sb.location_id = ${locId}` : sql``}
-      ${supId ? sql`AND sb.supplier_id = ${supId}` : sql``}
-      ${st ? sql`AND UPPER(COALESCE(sb.status, '')) = ${st}` : sql``}
-      ${
-        like
-          ? sql`AND (
-              COALESCE(s.name, '') ILIKE ${like}
-              OR COALESCE(sb.bill_no, '') ILIKE ${like}
-              OR COALESCE(sb.reference, '') ILIKE ${like}
-              OR COALESCE(sb.note, '') ILIKE ${like}
-              OR COALESCE(sb.notes, '') ILIKE ${like}
-              OR COALESCE(l.name, '') ILIKE ${like}
-              OR COALESCE(l.code, '') ILIKE ${like}
-            )`
-          : sql``
-      }
+      createdAt: supplierBills.createdAt,
+      updatedAt: supplierBills.updatedAt,
 
-    ORDER BY sb.created_at DESC, sb.id DESC
-    LIMIT ${lim}
-    OFFSET ${off}
-  `);
+      isOverdue: sql`
+        CASE
+          WHEN ${supplierBills.status} IN ('PAID', 'VOID') THEN false
+          WHEN ${supplierBills.dueDate} IS NULL THEN false
+          WHEN ${supplierBills.dueDate} < CURRENT_DATE THEN true
+          ELSE false
+        END
+      `.as("isOverdue"),
 
-  return rowsOf(res);
+      daysOverdue: sql`
+        CASE
+          WHEN ${supplierBills.status} IN ('PAID', 'VOID') THEN 0
+          WHEN ${supplierBills.dueDate} IS NULL THEN 0
+          WHEN ${supplierBills.dueDate} < CURRENT_DATE
+            THEN (CURRENT_DATE - ${supplierBills.dueDate})::int
+          ELSE 0
+        END
+      `.as("daysOverdue"),
+    })
+    .from(supplierBills)
+    .leftJoin(suppliers, eq(suppliers.id, supplierBills.supplierId))
+    .leftJoin(locations, eq(locations.id, supplierBills.locationId))
+    .leftJoin(users, eq(users.id, supplierBills.createdByUserId))
+    .where(where.length ? and(...where) : undefined)
+    .orderBy(desc(supplierBills.createdAt), desc(supplierBills.id))
+    .limit(lim)
+    .offset(off);
+
+  return rows || [];
 }
 
 async function getOwnerSupplierBillsSummary({
@@ -122,115 +135,110 @@ async function getOwnerSupplierBillsSummary({
   const supId = toInt(supplierId, null);
   const st = cleanStr(status).toUpperCase();
   const query = cleanStr(q);
-  const like = query ? `%${query}%` : null;
 
-  const res = await db.execute(sql`
-    SELECT
-      COUNT(*)::int as "billsCount",
+  const where = [];
 
-      COALESCE(SUM(COALESCE(sb.total_amount, 0)), 0)::int as "totalAmount",
-      COALESCE(SUM(COALESCE(sb.paid_amount, 0)), 0)::int as "paidAmount",
-      COALESCE(SUM(
-        GREATEST(
-          COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-          0
-        )
-      ), 0)::int as "balanceAmount",
+  if (locId) {
+    where.push(eq(supplierBills.locationId, locId));
+  }
 
-      COUNT(*) FILTER (
-        WHERE UPPER(COALESCE(sb.status, '')) = 'PARTIALLY_PAID'
-      )::int as "partiallyPaidCount",
+  if (supId) {
+    where.push(eq(supplierBills.supplierId, supId));
+  }
 
-      COUNT(*) FILTER (
-        WHERE UPPER(COALESCE(sb.status, '')) NOT IN ('PAID', 'VOID')
-          AND sb.due_date IS NOT NULL
-          AND sb.due_date < CURRENT_DATE
-      )::int as "overdueBillsCount",
+  if (st) {
+    where.push(eq(supplierBills.status, st));
+  }
 
-      COALESCE(SUM(
-        CASE
-          WHEN UPPER(COALESCE(sb.status, '')) NOT IN ('PAID', 'VOID')
-            AND sb.due_date IS NOT NULL
-            AND sb.due_date < CURRENT_DATE
-          THEN GREATEST(
-            COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-            0
-          )
-          ELSE 0
-        END
-      ), 0)::int as "overdueAmount",
+  if (query) {
+    const like = `%${query}%`;
+    where.push(sql`(
+      ${suppliers.name} ILIKE ${like}
+      OR ${supplierBills.billNo} ILIKE ${like}
+      OR ${supplierBills.note} ILIKE ${like}
+      OR ${locations.name} ILIKE ${like}
+      OR ${locations.code} ILIKE ${like}
+    )`);
+  }
 
-      COALESCE(SUM(
-        CASE WHEN UPPER(COALESCE(sb.currency, 'RWF')) = 'RWF'
-        THEN GREATEST(
-          COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-          0
-        ) ELSE 0 END
-      ), 0)::int as "balanceRWF",
+  const rows = await db
+    .select({
+      billsCount: sql`count(*)::int`.as("billsCount"),
+      totalAmount: sql`coalesce(sum(${supplierBills.totalAmount}), 0)::int`.as(
+        "totalAmount",
+      ),
+      paidAmount: sql`coalesce(sum(${supplierBills.paidAmount}), 0)::int`.as(
+        "paidAmount",
+      ),
+      balanceAmount: sql`coalesce(sum(
+        greatest(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)
+      ), 0)::int`.as("balanceAmount"),
 
-      COALESCE(SUM(
-        CASE WHEN UPPER(COALESCE(sb.currency, 'RWF')) = 'USD'
-        THEN GREATEST(
-          COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-          0
-        ) ELSE 0 END
-      ), 0)::int as "balanceUSD",
+      partiallyPaidCount: sql`count(*) filter (
+        where ${supplierBills.status} = 'PARTIALLY_PAID'
+      )::int`.as("partiallyPaidCount"),
 
-      COALESCE(SUM(
-        CASE
-          WHEN UPPER(COALESCE(sb.currency, 'RWF')) = 'RWF'
-           AND UPPER(COALESCE(sb.status, '')) NOT IN ('PAID', 'VOID')
-           AND sb.due_date IS NOT NULL
-           AND sb.due_date < CURRENT_DATE
-          THEN GREATEST(
-            COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-            0
-          )
-          ELSE 0
-        END
-      ), 0)::int as "overdueRWF",
+      overdueBillsCount: sql`count(*) filter (
+        where ${supplierBills.status} not in ('PAID', 'VOID')
+          and ${supplierBills.dueDate} is not null
+          and ${supplierBills.dueDate} < CURRENT_DATE
+      )::int`.as("overdueBillsCount"),
 
-      COALESCE(SUM(
-        CASE
-          WHEN UPPER(COALESCE(sb.currency, 'RWF')) = 'USD'
-           AND UPPER(COALESCE(sb.status, '')) NOT IN ('PAID', 'VOID')
-           AND sb.due_date IS NOT NULL
-           AND sb.due_date < CURRENT_DATE
-          THEN GREATEST(
-            COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-            0
-          )
-          ELSE 0
-        END
-      ), 0)::int as "overdueUSD"
+      overdueAmount: sql`coalesce(sum(
+        case
+          when ${supplierBills.status} not in ('PAID', 'VOID')
+           and ${supplierBills.dueDate} is not null
+           and ${supplierBills.dueDate} < CURRENT_DATE
+          then greatest(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)
+          else 0
+        end
+      ), 0)::int`.as("overdueAmount"),
 
-    FROM supplier_bills sb
-    LEFT JOIN suppliers s
-      ON s.id = sb.supplier_id
-    LEFT JOIN locations l
-      ON l.id = sb.location_id
+      balanceRWF: sql`coalesce(sum(
+        case
+          when upper(coalesce(${supplierBills.currency}, 'RWF')) = 'RWF'
+          then greatest(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)
+          else 0
+        end
+      ), 0)::int`.as("balanceRWF"),
 
-    WHERE 1=1
-      ${locId ? sql`AND sb.location_id = ${locId}` : sql``}
-      ${supId ? sql`AND sb.supplier_id = ${supId}` : sql``}
-      ${st ? sql`AND UPPER(COALESCE(sb.status, '')) = ${st}` : sql``}
-      ${
-        like
-          ? sql`AND (
-              COALESCE(s.name, '') ILIKE ${like}
-              OR COALESCE(sb.bill_no, '') ILIKE ${like}
-              OR COALESCE(sb.reference, '') ILIKE ${like}
-              OR COALESCE(sb.note, '') ILIKE ${like}
-              OR COALESCE(sb.notes, '') ILIKE ${like}
-              OR COALESCE(l.name, '') ILIKE ${like}
-              OR COALESCE(l.code, '') ILIKE ${like}
-            )`
-          : sql``
-      }
-  `);
+      balanceUSD: sql`coalesce(sum(
+        case
+          when upper(coalesce(${supplierBills.currency}, 'RWF')) = 'USD'
+          then greatest(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)
+          else 0
+        end
+      ), 0)::int`.as("balanceUSD"),
+
+      overdueRWF: sql`coalesce(sum(
+        case
+          when upper(coalesce(${supplierBills.currency}, 'RWF')) = 'RWF'
+           and ${supplierBills.status} not in ('PAID', 'VOID')
+           and ${supplierBills.dueDate} is not null
+           and ${supplierBills.dueDate} < CURRENT_DATE
+          then greatest(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)
+          else 0
+        end
+      ), 0)::int`.as("overdueRWF"),
+
+      overdueUSD: sql`coalesce(sum(
+        case
+          when upper(coalesce(${supplierBills.currency}, 'RWF')) = 'USD'
+           and ${supplierBills.status} not in ('PAID', 'VOID')
+           and ${supplierBills.dueDate} is not null
+           and ${supplierBills.dueDate} < CURRENT_DATE
+          then greatest(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)
+          else 0
+        end
+      ), 0)::int`.as("overdueUSD"),
+    })
+    .from(supplierBills)
+    .leftJoin(suppliers, eq(suppliers.id, supplierBills.supplierId))
+    .leftJoin(locations, eq(locations.id, supplierBills.locationId))
+    .where(where.length ? and(...where) : undefined);
 
   return (
-    rowsOf(res)[0] || {
+    rows?.[0] || {
       billsCount: 0,
       totalAmount: 0,
       paidAmount: 0,
@@ -250,90 +258,85 @@ async function getOwnerSupplierBillById(id) {
   const billId = toInt(id, null);
   if (!billId) return null;
 
-  const billRes = await db.execute(sql`
-    SELECT
-      sb.id,
-      sb.location_id as "locationId",
-      COALESCE(l.name, CONCAT('Branch #', sb.location_id::text)) as "locationName",
-      COALESCE(l.code, '') as "locationCode",
+  const billRows = await db
+    .select({
+      id: supplierBills.id,
+      locationId: supplierBills.locationId,
+      locationName: locations.name,
+      locationCode: locations.code,
 
-      sb.supplier_id as "supplierId",
-      COALESCE(s.name, 'Unknown supplier') as "supplierName",
-      COALESCE(s.default_currency, sb.currency, 'RWF') as "supplierDefaultCurrency",
+      supplierId: supplierBills.supplierId,
+      supplierName: suppliers.name,
+      supplierDefaultCurrency: suppliers.defaultCurrency,
 
-      COALESCE(sb.bill_no, sb.reference, '') as "billNo",
-      COALESCE(sb.currency, 'RWF') as "currency",
+      billNo: supplierBills.billNo,
+      currency: supplierBills.currency,
 
-      COALESCE(sb.total_amount, 0)::int as "totalAmount",
-      COALESCE(sb.paid_amount, 0)::int as "paidAmount",
+      totalAmount: supplierBills.totalAmount,
+      paidAmount: supplierBills.paidAmount,
+      balance:
+        sql`GREATEST(${supplierBills.totalAmount} - ${supplierBills.paidAmount}, 0)::int`.as(
+          "balance",
+        ),
 
-      GREATEST(
-        COALESCE(NULLIF(sb.balance_due, 0), sb.total_amount - sb.paid_amount, sb.total_amount, 0),
-        0
-      )::int as "balance",
+      status: supplierBills.status,
+      issuedDate: supplierBills.issuedDate,
+      dueDate: supplierBills.dueDate,
+      note: supplierBills.note,
 
-      COALESCE(sb.status, 'OPEN') as "status",
-      COALESCE(sb.issued_date, sb.bill_date) as "issuedDate",
-      sb.due_date as "dueDate",
-      COALESCE(sb.note, sb.notes, '') as "note",
+      createdByUserId: supplierBills.createdByUserId,
+      createdByName: users.name,
 
-      COALESCE(sb.created_by_user_id, sb.created_by) as "createdByUserId",
-      COALESCE(u.name, u.email, CONCAT('User #', COALESCE(sb.created_by_user_id, sb.created_by)::text)) as "createdByName",
+      createdAt: supplierBills.createdAt,
+      updatedAt: supplierBills.updatedAt,
+    })
+    .from(supplierBills)
+    .leftJoin(suppliers, eq(suppliers.id, supplierBills.supplierId))
+    .leftJoin(locations, eq(locations.id, supplierBills.locationId))
+    .leftJoin(users, eq(users.id, supplierBills.createdByUserId))
+    .where(eq(supplierBills.id, billId))
+    .limit(1);
 
-      sb.created_at as "createdAt",
-      sb.updated_at as "updatedAt"
-    FROM supplier_bills sb
-    LEFT JOIN suppliers s
-      ON s.id = sb.supplier_id
-    LEFT JOIN locations l
-      ON l.id = sb.location_id
-    LEFT JOIN users u
-      ON u.id = COALESCE(sb.created_by_user_id, sb.created_by)
-    WHERE sb.id = ${billId}
-    LIMIT 1
-  `);
-
-  const bill = rowsOf(billRes)[0];
+  const bill = billRows?.[0] || null;
   if (!bill) return null;
 
-  const itemsRes = await db.execute(sql`
-    SELECT
-      i.id,
-      i.bill_id as "billId",
-      i.product_id as "productId",
-      i.description,
-      COALESCE(i.qty, 0)::int as "qty",
-      COALESCE(i.unit_cost, 0)::int as "unitCost",
-      COALESCE(i.line_total, 0)::int as "lineTotal",
-      i.created_at as "createdAt"
-    FROM supplier_bill_items i
-    WHERE i.bill_id = ${billId}
-    ORDER BY i.id ASC
-  `);
+  const items = await db
+    .select({
+      id: supplierBillItems.id,
+      billId: supplierBillItems.billId,
+      productId: supplierBillItems.productId,
+      description: supplierBillItems.description,
+      qty: supplierBillItems.qty,
+      unitCost: supplierBillItems.unitCost,
+      lineTotal: supplierBillItems.lineTotal,
+      createdAt: supplierBillItems.createdAt,
+    })
+    .from(supplierBillItems)
+    .where(eq(supplierBillItems.billId, billId))
+    .orderBy(desc(supplierBillItems.id));
 
-  const paymentsRes = await db.execute(sql`
-    SELECT
-      p.id,
-      p.bill_id as "billId",
-      COALESCE(p.amount, 0)::int as "amount",
-      p.method,
-      p.reference,
-      p.note,
-      p.paid_at as "paidAt",
-      p.created_by_user_id as "createdByUserId",
-      COALESCE(u.name, u.email, CONCAT('User #', p.created_by_user_id::text)) as "createdByName",
-      p.created_at as "createdAt"
-    FROM supplier_bill_payments p
-    LEFT JOIN users u
-      ON u.id = p.created_by_user_id
-    WHERE p.bill_id = ${billId}
-    ORDER BY p.paid_at DESC, p.id DESC
-  `);
+  const payments = await db
+    .select({
+      id: supplierBillPayments.id,
+      billId: supplierBillPayments.billId,
+      amount: supplierBillPayments.amount,
+      method: supplierBillPayments.method,
+      reference: supplierBillPayments.reference,
+      note: supplierBillPayments.note,
+      paidAt: supplierBillPayments.paidAt,
+      createdByUserId: supplierBillPayments.createdByUserId,
+      createdByName: users.name,
+      createdAt: supplierBillPayments.createdAt,
+    })
+    .from(supplierBillPayments)
+    .leftJoin(users, eq(users.id, supplierBillPayments.createdByUserId))
+    .where(eq(supplierBillPayments.billId, billId))
+    .orderBy(desc(supplierBillPayments.paidAt), desc(supplierBillPayments.id));
 
   return {
     bill,
-    items: rowsOf(itemsRes),
-    payments: rowsOf(paymentsRes),
+    items: items || [],
+    payments: payments || [],
   };
 }
 
