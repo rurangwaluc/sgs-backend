@@ -13,6 +13,18 @@ function parseBool(v) {
   return String(v || "").toLowerCase() === "true" || String(v || "") === "1";
 }
 
+function parsePositiveInt(value, fallback = 20, max = 100) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n <= 0) return fallback;
+  return Math.min(n, max);
+}
+
+function parseNonNegativeInt(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) return fallback;
+  return n;
+}
+
 function normalizeStockStatus(v) {
   const value = String(v || "ALL")
     .trim()
@@ -148,6 +160,8 @@ async function listOwnerInventory({
   includeInactive = false,
   search,
   stockStatus = "ALL",
+  limit = 20,
+  offset = 0,
 } = {}) {
   const normalizedStockStatus = normalizeStockStatus(stockStatus);
   const parsedLocationId = Number(locationId);
@@ -155,6 +169,9 @@ async function listOwnerInventory({
     Number.isFinite(parsedLocationId) && parsedLocationId > 0;
   const searchValue = String(search || "").trim();
   const hasSearch = searchValue.length > 0;
+
+  const safeLimit = parsePositiveInt(limit, 20, 100);
+  const safeOffset = parseNonNegativeInt(offset, 0);
 
   const inactiveSql = includeInactive
     ? sql``
@@ -187,6 +204,23 @@ async function listOwnerInventory({
           ? sql`AND COALESCE(b.qty_on_hand, 0) > ${LOW_STOCK_THRESHOLD}`
           : sql``;
 
+  const countResult = await db.execute(sql`
+    SELECT COUNT(*)::int AS "total"
+    FROM products p
+    INNER JOIN locations l
+      ON l.id = p.location_id
+    LEFT JOIN inventory_balances b
+      ON b.product_id = p.id
+     AND b.location_id = p.location_id
+    WHERE 1 = 1
+    ${inactiveSql}
+    ${locationSql}
+    ${searchSql}
+    ${stockSql}
+  `);
+
+  const total = Number((countResult.rows || countResult || [])[0]?.total ?? 0);
+
   const result = await db.execute(sql`
     SELECT
       p.id::int AS "productId",
@@ -216,10 +250,21 @@ async function listOwnerInventory({
     ${searchSql}
     ${stockSql}
     ORDER BY l.name ASC, p.name ASC, p.id DESC
+    LIMIT ${safeLimit}
+    OFFSET ${safeOffset}
   `);
 
-  const rows = result.rows || result || [];
-  return rows.map(mapOwnerInventoryRow);
+  const rows = (result.rows || result || []).map(mapOwnerInventoryRow);
+
+  return {
+    rows,
+    meta: {
+      total,
+      limit: safeLimit,
+      offset: safeOffset,
+      hasMore: safeOffset + rows.length < total,
+    },
+  };
 }
 
 async function getOwnerProductInventoryByProductId({
@@ -465,6 +510,8 @@ async function adjustOwnerInventory({
 module.exports = {
   LOW_STOCK_THRESHOLD,
   parseBool,
+  parsePositiveInt,
+  parseNonNegativeInt,
   normalizeStockStatus,
   getOwnerInventorySummary,
   listOwnerInventory,

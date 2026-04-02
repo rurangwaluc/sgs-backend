@@ -84,6 +84,17 @@ const { uploadsRoutes } = require("./routes/uploads.routes");
 const { suppliersRoutes } = require("./routes/suppliers.routes");
 const { supplierBillsRoutes } = require("./routes/supplierBills.routes");
 
+const supplierProfilesRoutesModule = require("./routes/supplierProfiles.routes");
+const supplierEvaluationsRoutesModule = require("./routes/supplierEvaluations.routes");
+
+const supplierProfilesRoutes =
+  supplierProfilesRoutesModule?.supplierProfilesRoutes ||
+  supplierProfilesRoutesModule;
+
+const supplierEvaluationsRoutes =
+  supplierEvaluationsRoutesModule?.supplierEvaluationsRoutes ||
+  supplierEvaluationsRoutesModule;
+
 const { adminCoverageRoutes } = require("./routes/adminCoverage.routes");
 
 function buildApp() {
@@ -197,6 +208,25 @@ function buildApp() {
 
   app.register(suppliersRoutes);
   app.register(supplierBillsRoutes);
+
+  if (typeof supplierProfilesRoutes === "function") {
+    app.register(supplierProfilesRoutes);
+  } else {
+    app.log.error(
+      { supplierProfilesRoutesType: typeof supplierProfilesRoutes },
+      "supplierProfilesRoutes is not a valid Fastify plugin",
+    );
+  }
+
+  if (typeof supplierEvaluationsRoutes === "function") {
+    app.register(supplierEvaluationsRoutes);
+  } else {
+    app.log.error(
+      { supplierEvaluationsRoutesType: typeof supplierEvaluationsRoutes },
+      "supplierEvaluationsRoutes is not a valid Fastify plugin",
+    );
+  }
+
   app.register(adminCoverageRoutes);
 
   app.setErrorHandler((error, request, reply) => {

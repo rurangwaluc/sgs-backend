@@ -58,6 +58,19 @@ function parseDateOrNull(v) {
   return s || null;
 }
 
+function toDateOrNull(value) {
+  if (value == null || value === "") return null;
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    const err = new Error("Invalid date value");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  return date;
+}
+
 function moneyInt(v) {
   const n = Number(v);
   if (!Number.isFinite(n)) return 0;
@@ -697,7 +710,7 @@ async function addOwnerSupplierBillPayment({ ownerUserId, billId, payload }) {
         method: normalizeMethod(data.method, "BANK"),
         reference: cleanStr(data.reference),
         note: cleanStr(data.note),
-        paidAt: parseDateOrNull(data.paidAt) || new Date(),
+        paidAt: toDateOrNull(data.paidAt) || new Date(),
         createdByUserId: ownerUserId,
         createdAt: sql`now()`,
       })

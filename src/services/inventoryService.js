@@ -53,8 +53,8 @@ function mapProductRow(row, includePurchasePrice = true) {
     color: row.color ?? null,
     material: row.material ?? null,
 
-    gender: row.gender ?? null,
-    season: row.season ?? null,
+    gender: null,
+    season: null,
 
     unit: row.unit ?? "PIECE",
 
@@ -76,7 +76,6 @@ function mapProductRow(row, includePurchasePrice = true) {
         ? undefined
         : Number(row.qtyOnHand || 0),
 
-    // compatibility fields for existing frontend code
     stockUnit: row.unit ?? "PIECE",
     salesUnit: row.unit ?? "PIECE",
     purchaseUnit: row.unit ?? "PIECE",
@@ -134,9 +133,6 @@ async function createProduct({ locationId, userId, data }) {
         supplierCode,
 
         reorderLevel: normalizePositiveInt(data.reorderLevel, 0),
-
-        gender: cleanText(data.gender, 20),
-        season: cleanText(data.season, 40),
 
         sellingPrice: normalizePositiveInt(data.sellingPrice, 0),
         costPrice: normalizePositiveInt(data.costPrice, 0),
@@ -221,8 +217,6 @@ async function listProducts({
       p.size,
       p.color,
       p.material,
-      p.gender,
-      p.season,
       p.unit,
       p.selling_price as "sellingPrice",
       p.cost_price as "purchasePrice",
@@ -329,8 +323,6 @@ async function getInventoryBalances({ locationId, includeInactive = false }) {
       p.size,
       p.color,
       p.material,
-      p.gender,
-      p.season,
       p.unit,
       p.selling_price as "sellingPrice",
       p.cost_price as "purchasePrice",

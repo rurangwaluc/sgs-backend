@@ -12,25 +12,25 @@ const {
 
 async function supplierEvaluationsRoutes(app) {
   app.get(
-    "/suppliers/:supplierId/evaluation",
+    "/owner/suppliers/:supplierId/evaluation",
     { preHandler: [requirePermission(ACTIONS.SUPPLIER_VIEW)] },
     getSupplierEvaluation,
   );
 
   app.post(
-    "/suppliers/:supplierId/evaluation",
+    "/owner/suppliers/:supplierId/evaluation",
     { preHandler: [requirePermission(ACTIONS.SUPPLIER_UPDATE)] },
     createSupplierEvaluation,
   );
 
   app.patch(
-    "/suppliers/:supplierId/evaluation",
+    "/owner/suppliers/:supplierId/evaluation",
     { preHandler: [requirePermission(ACTIONS.SUPPLIER_UPDATE)] },
     updateSupplierEvaluation,
   );
 
   app.put(
-    "/suppliers/:supplierId/evaluation",
+    "/owner/suppliers/:supplierId/evaluation",
     { preHandler: [requirePermission(ACTIONS.SUPPLIER_UPDATE)] },
     upsertSupplierEvaluation,
   );

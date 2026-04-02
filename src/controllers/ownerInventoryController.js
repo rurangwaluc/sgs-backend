@@ -28,14 +28,30 @@ async function listOwnerInventory(request, reply) {
       request.query?.includeInactive,
     );
 
-    const inventory = await ownerInventoryService.listOwnerInventory({
+    const limit = ownerInventoryService.parsePositiveInt(
+      request.query?.limit,
+      20,
+      100,
+    );
+    const offset = ownerInventoryService.parseNonNegativeInt(
+      request.query?.offset,
+      0,
+    );
+
+    const result = await ownerInventoryService.listOwnerInventory({
       locationId: request.query?.locationId,
       includeInactive,
       search: request.query?.search,
       stockStatus: request.query?.stockStatus,
+      limit,
+      offset,
     });
 
-    return reply.send({ ok: true, inventory });
+    return reply.send({
+      ok: true,
+      inventory: result.rows,
+      meta: result.meta,
+    });
   } catch (e) {
     request.log.error(e);
     return reply.status(500).send({ error: "Internal Server Error" });
