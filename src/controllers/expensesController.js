@@ -2,6 +2,8 @@
 
 const {
   createExpenseSchema,
+  voidExpenseSchema,
+  expenseIdParamsSchema,
   listExpensesQuerySchema,
 } = require("../validators/expenses.schema");
 const expensesService = require("../services/expensesService");
@@ -40,8 +42,11 @@ async function createExpense(request, reply) {
     });
   }
 
-  const isOwner = normalizeRole(request.user?.role) === "owner";
-  const effectiveLocationId = isOwner
+  const role = normalizeRole(request.user?.role);
+  const isOwnerLike =
+    role === "owner" || role === "admin" || role === "manager";
+
+  const effectiveLocationId = isOwnerLike
     ? parsed.data.locationId || request.user.locationId
     : request.user.locationId;
 
@@ -52,17 +57,90 @@ async function createExpense(request, reply) {
       cashSessionId: parsed.data.cashSessionId,
       category: parsed.data.category,
       amount: parsed.data.amount,
+      expenseDate: parsed.data.expenseDate,
+      method: parsed.data.method,
+      payeeName: parsed.data.payeeName,
       reference: parsed.data.reference,
       note: parsed.data.note,
+      attachments: parsed.data.attachments || [],
+      allowMissingCashSession: isOwnerLike,
     });
 
-    return reply.send({ ok: true, expense });
+    return reply.send({
+      ok: true,
+      expense,
+    });
   } catch (e) {
     if (e.code === "SESSION_NOT_FOUND") {
       return reply.status(404).send({ error: e.message });
     }
 
+    if (e.code === "NO_OPEN_SESSION") {
+      return reply.status(409).send({ error: e.message });
+    }
+
+    if (
+      e.code === "BAD_LOCATION" ||
+      e.code === "BAD_CASHIER" ||
+      e.code === "BAD_AMOUNT" ||
+      e.code === "BAD_EXPENSE_DATE" ||
+      e.code === "BAD_CATEGORY" ||
+      e.code === "RESERVED_EXPENSE_CATEGORY"
+    ) {
+      return reply.status(400).send({ error: e.message });
+    }
+
     request.log.error({ err: e }, "createExpense failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
+async function voidExpense(request, reply) {
+  const paramsParsed = expenseIdParamsSchema.safeParse(request.params || {});
+  if (!paramsParsed.success) {
+    return reply.status(400).send({
+      error: "Invalid expense id",
+      details: paramsParsed.error.flatten(),
+    });
+  }
+
+  const bodyParsed = voidExpenseSchema.safeParse(request.body || {});
+  if (!bodyParsed.success) {
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: bodyParsed.error.flatten(),
+    });
+  }
+
+  try {
+    const expense = await expensesService.voidExpense({
+      expenseId: paramsParsed.data.id,
+      actorUserId: request.user.id,
+      reason: bodyParsed.data.reason,
+    });
+
+    return reply.send({
+      ok: true,
+      expense,
+    });
+  } catch (e) {
+    if (e.code === "EXPENSE_NOT_FOUND") {
+      return reply.status(404).send({ error: e.message });
+    }
+
+    if (e.code === "EXPENSE_NOT_VOIDABLE") {
+      return reply.status(409).send({ error: e.message });
+    }
+
+    if (
+      e.code === "BAD_EXPENSE_ID" ||
+      e.code === "BAD_ACTOR" ||
+      e.code === "BAD_VOID_REASON"
+    ) {
+      return reply.status(400).send({ error: e.message });
+    }
+
+    request.log.error({ err: e }, "voidExpense failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -76,17 +154,22 @@ async function listExpenses(request, reply) {
     });
   }
 
-  try {
-    const isOwner = normalizeRole(request.user?.role) === "owner";
-    const effectiveLocationId = isOwner
-      ? (parsed.data.locationId ?? null)
-      : request.user.locationId;
+  const role = normalizeRole(request.user?.role);
+  const isOwnerLike =
+    role === "owner" || role === "admin" || role === "manager";
 
+  try {
     const result = await expensesService.listExpenses({
-      locationId: effectiveLocationId,
+      locationId: isOwnerLike
+        ? (parsed.data.locationId ?? null)
+        : request.user.locationId,
       cashSessionId: parsed.data.cashSessionId ?? null,
-      cashierId: parsed.data.cashierId ?? null,
+      cashierId: isOwnerLike
+        ? (parsed.data.cashierId ?? null)
+        : request.user.id,
       category: parsed.data.category ?? null,
+      method: parsed.data.method ?? null,
+      status: parsed.data.status ?? null,
       q: parsed.data.q ?? null,
       from: parseIsoDateStart(parsed.data.from),
       toExclusive: parseIsoDateEndExclusive(parsed.data.to),
@@ -107,5 +190,6 @@ async function listExpenses(request, reply) {
 
 module.exports = {
   createExpense,
+  voidExpense,
   listExpenses,
 };

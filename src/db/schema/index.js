@@ -32,6 +32,7 @@ module.exports = {
   cashLedger: require("./cash_ledger.schema"),
   cashReconciliations: require("./cash_reconciliations.schema"),
   expenses: require("./expenses.schema"),
+  expenseAttachments: require("./expense_attachments.schema"),
   cashbookDeposits: require("./cashbook_deposits.schema"),
 
   // Refunds (pro)
