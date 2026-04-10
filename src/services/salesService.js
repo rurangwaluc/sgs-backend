@@ -6,7 +6,7 @@ const { products } = require("../db/schema/products.schema");
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { customers } = require("../db/schema/customers.schema");
-const { eq, and, inArray } = require("drizzle-orm");
+const { eq, and, inArray, desc } = require("drizzle-orm");
 
 /**
  * BCS sales flow:
@@ -150,8 +150,20 @@ async function createSale({
   }
 
   return db.transaction(async (tx) => {
+    // IMPORTANT:
+    // Select ONLY fields needed for sales creation.
+    // Do not use .select().from(products) here, because the DB table may lag
+    // behind the schema on unrelated catalog fields like gender/season.
     const prodRows = await tx
-      .select()
+      .select({
+        id: products.id,
+        locationId: products.locationId,
+        name: products.name,
+        sku: products.sku,
+        sellingPrice: products.sellingPrice,
+        maxDiscountPercent: products.maxDiscountPercent,
+        isActive: products.isActive,
+      })
       .from(products)
       .where(and(eq(products.locationId, locId), inArray(products.id, ids)));
 
@@ -173,6 +185,13 @@ async function createSale({
         throw err;
       }
 
+      if (prod.isActive === false) {
+        const err = new Error("Product is inactive");
+        err.code = "PRODUCT_INACTIVE";
+        err.debug = { productId: pid };
+        throw err;
+      }
+
       const qty = toInt(it?.qty);
       if (qty <= 0) {
         const err = new Error("Invalid qty");
@@ -181,7 +200,10 @@ async function createSale({
         throw err;
       }
 
-      const sellingPrice = toInt(prod.sellingPrice ?? prod.selling_price ?? 0);
+      const sellingPrice = toInt(prod.sellingPrice ?? 0);
+
+      // Seller must not control unit price.
+      // We always use the official selling price from products.
       const requestedUnit =
         it?.unitPrice == null ? sellingPrice : toInt(it.unitPrice);
 
@@ -199,11 +221,16 @@ async function createSale({
         throw err;
       }
 
-      const itemMax = clamp(
-        toPct(prod.maxDiscountPercent ?? prod.max_discount_percent ?? 0),
-        0,
-        100,
-      );
+      if (requestedUnit < sellingPrice) {
+        const err = new Error(
+          "Use discount instead of changing the product price",
+        );
+        err.code = "PRICE_BELOW_SELLING_NOT_ALLOWED";
+        err.debug = { productId: pid, sellingPrice, requestedUnit };
+        throw err;
+      }
+
+      const itemMax = clamp(toPct(prod.maxDiscountPercent ?? 0), 0, 100);
       strictMaxDisc = Math.min(strictMaxDisc, itemMax);
 
       const itemPct =
@@ -228,7 +255,7 @@ async function createSale({
 
       const line = computeLine({
         qty,
-        unitPrice: requestedUnit,
+        unitPrice: sellingPrice,
         discountPercent: itemPct,
         discountAmount: it?.discountAmount,
       });
@@ -546,7 +573,6 @@ async function markSale({
 
     const raw = String(status || "").toUpperCase();
 
-    // Credit is no longer created through salesService.markSale in BCS.
     if (raw === "PENDING" || raw === "CREDIT") {
       const err = new Error("Use POST /credits to create a credit request");
       err.code = "USE_CREDIT_ENDPOINT";
