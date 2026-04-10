@@ -33,6 +33,8 @@ const inventoryArrivals = pgTable(
       .notNull()
       .default(0),
 
+    createdByUserId: integer("created_by_user_id").notNull(),
+
     receivedByUserId: integer("received_by_user_id").notNull(),
 
     receivedAt: timestamp("received_at", { withTimezone: true })
@@ -48,6 +50,9 @@ const inventoryArrivals = pgTable(
       "idx_inventory_arrivals_location_received_at",
     ).on(t.locationId, t.receivedAt),
     supplierIdx: index("idx_inventory_arrivals_supplier").on(t.supplierId),
+    createdByIdx: index("idx_inventory_arrivals_created_by").on(
+      t.createdByUserId,
+    ),
     receivedByIdx: index("idx_inventory_arrivals_received_by").on(
       t.receivedByUserId,
     ),

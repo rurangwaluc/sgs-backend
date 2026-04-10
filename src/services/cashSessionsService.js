@@ -1,5 +1,6 @@
 const { db } = require("../config/db");
 const { cashSessions } = require("../db/schema/cash_sessions.schema");
+const { cashLedger } = require("../db/schema/cash_ledger.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const notificationService = require("./notificationService");
 const { and, eq, desc, sql } = require("drizzle-orm");
@@ -34,12 +35,18 @@ function normSessionRow(s) {
     previousSessionId:
       s.previousSessionId == null ? null : Number(s.previousSessionId),
 
-    expectedClosingBalance: Number(s.expectedClosingBalance ?? 0),
-    countedClosingBalance: Number(s.countedClosingBalance ?? 0),
-    closingVarianceAmount: Number(s.closingVarianceAmount ?? 0),
-    closingVarianceType: String(s.closingVarianceType || "MATCH"),
+    countedClosingBalance:
+      s.countedClosingBalance == null ? null : Number(s.countedClosingBalance),
+    expectedClosingBalance:
+      s.expectedClosingBalance == null
+        ? null
+        : Number(s.expectedClosingBalance),
+    closingVarianceAmount:
+      s.closingVarianceAmount == null ? null : Number(s.closingVarianceAmount),
+    closingVarianceType: s.closingVarianceType
+      ? String(s.closingVarianceType)
+      : null,
     closingVarianceReason: s.closingVarianceReason ?? null,
-    closingNote: s.closingNote ?? null,
 
     updatedAt: s.updatedAt,
   };
@@ -66,6 +73,36 @@ async function findLastClosedSession(tx, { locationId }) {
     .limit(1);
 
   return rows[0] || null;
+}
+
+async function computeExpectedCashFromLedger(
+  tx,
+  { sessionId, openingBalance },
+) {
+  const rows = await tx
+    .select({
+      direction: cashLedger.direction,
+      method: cashLedger.method,
+      amount: cashLedger.amount,
+    })
+    .from(cashLedger)
+    .where(eq(cashLedger.cashSessionId, sessionId));
+
+  let totalInCash = 0;
+  let totalOutCash = 0;
+
+  for (const row of rows || []) {
+    const method = String(row?.method || "").toUpperCase();
+    const direction = String(row?.direction || "").toUpperCase();
+    const amount = Number(row?.amount || 0) || 0;
+
+    if (method !== "CASH") continue;
+
+    if (direction === "IN") totalInCash += amount;
+    if (direction === "OUT") totalOutCash += amount;
+  }
+
+  return Number(openingBalance || 0) + totalInCash - totalOutCash;
 }
 
 async function openSession({
@@ -182,7 +219,7 @@ async function closeSession({
   locationId,
   cashierId,
   sessionId,
-  countedCash,
+  countedClosingCash,
   closingVarianceReason,
   note,
 }) {
@@ -208,48 +245,51 @@ async function closeSession({
       throw makeErr("BAD_STATUS", "Cash session already closed");
     }
 
-    const countedCashInt = toInt(countedCash, null);
-    if (countedCashInt == null || countedCashInt < 0) {
-      throw makeErr("BAD_COUNTED_CASH", "Counted cash is required");
-    }
-
-    const computed = await tx.execute(sql`
-      SELECT public.compute_expected_cash(${sessionId}::bigint) as expected_cash
-    `);
-    const computedRows = computed?.rows || computed || [];
-    const expectedCash = Number(computedRows?.[0]?.expected_cash ?? 0);
-
-    const closingVarianceAmount = countedCashInt - expectedCash;
-    const closingVarianceType = getVarianceType(closingVarianceAmount);
-
-    const cleanVarianceReason =
-      typeof closingVarianceReason === "string" && closingVarianceReason.trim()
-        ? closingVarianceReason.trim().slice(0, 300)
-        : null;
-
-    if (closingVarianceType !== "MATCH" && !cleanVarianceReason) {
-      throw makeErr(
-        "CLOSING_VARIANCE_REASON_REQUIRED",
-        "Explain why the counted cash is different from the expected cash",
-      );
-    }
+    const expectedCash = await computeExpectedCashFromLedger(tx, {
+      sessionId,
+      openingBalance: session.openingBalance,
+    });
 
     const cleanNote =
       typeof note === "string" && note.trim()
         ? note.trim().slice(0, 200)
         : null;
 
+    const countedValueRaw =
+      countedClosingCash === undefined || countedClosingCash === null
+        ? expectedCash
+        : Number(countedClosingCash);
+
+    if (!Number.isFinite(countedValueRaw) || countedValueRaw < 0) {
+      throw makeErr("BAD_COUNTED_CLOSING_CASH", "Invalid counted closing cash");
+    }
+
+    const countedValue = Math.round(countedValueRaw);
+    const closingVarianceAmount = countedValue - expectedCash;
+    const closingVarianceType = getVarianceType(closingVarianceAmount);
+
+    const cleanClosingVarianceReason =
+      typeof closingVarianceReason === "string" && closingVarianceReason.trim()
+        ? closingVarianceReason.trim().slice(0, 300)
+        : null;
+
+    if (closingVarianceType !== "MATCH" && !cleanClosingVarianceReason) {
+      throw makeErr(
+        "CLOSING_VARIANCE_REASON_REQUIRED",
+        "Explain why the counted cash is different from the expected cash",
+      );
+    }
+
     const [updated] = await tx
       .update(cashSessions)
       .set({
         status: "CLOSED",
-        closingBalance: countedCashInt, // official close used for next opening expectation
+        closingBalance: countedValue,
+        countedClosingBalance: countedValue,
         expectedClosingBalance: expectedCash,
-        countedClosingBalance: countedCashInt,
         closingVarianceAmount,
         closingVarianceType,
-        closingVarianceReason: cleanVarianceReason,
-        closingNote: cleanNote,
+        closingVarianceReason: cleanClosingVarianceReason,
         closedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -263,18 +303,19 @@ async function closeSession({
       entity: "cash_session",
       entityId: sessionId,
       description:
-        `Cash session closed. expectedClosingBalance=${expectedCash}, ` +
-        `countedClosingBalance=${countedCashInt}, ` +
+        `Cash session closed. countedClosingBalance=${countedValue}, ` +
+        `expectedClosingBalance=${expectedCash}, ` +
         `closingVarianceAmount=${closingVarianceAmount}, ` +
         `closingVarianceType=${closingVarianceType}, ` +
-        `reason=${cleanVarianceReason || "-"}, note=${cleanNote || "-"}`,
+        `reason=${cleanClosingVarianceReason || "-"}, ` +
+        `note=${cleanNote || "-"}`,
       meta: {
+        countedClosingBalance: countedValue,
         expectedClosingBalance: expectedCash,
-        countedClosingBalance: countedCashInt,
         closingVarianceAmount,
         closingVarianceType,
-        closingVarianceReason: cleanVarianceReason,
-        closingNote: cleanNote,
+        closingVarianceReason: cleanClosingVarianceReason,
+        note: cleanNote,
       },
     });
 
@@ -291,12 +332,12 @@ async function closeSession({
         title: `Closing cash ${varianceWord} detected`,
         body:
           `Expected closing cash was ${expectedCash} RWF, ` +
-          `but counted cash was ${countedCashInt} RWF. ` +
+          `but counted closing cash was ${countedValue} RWF. ` +
           `Difference: ${diffAbs} RWF (${closingVarianceType}). ` +
-          `Reason: ${cleanVarianceReason || "-"}`,
+          `Reason: ${cleanClosingVarianceReason || "-"}`,
         priority: diffAbs > 1000 ? "warn" : "normal",
         entity: "cash_session",
-        entityId: updated.id,
+        entityId: sessionId,
         tx,
       });
     }
