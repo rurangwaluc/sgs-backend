@@ -210,6 +210,11 @@ function mapArrivalRow(row) {
 
     totalAmount: Number(row.totalAmount || 0),
 
+    createdByUserId:
+      row.createdByUserId == null ? null : Number(row.createdByUserId),
+    createdByName: row.createdByName ?? null,
+    createdByEmail: row.createdByEmail ?? null,
+
     receivedByUserId:
       row.receivedByUserId == null ? null : Number(row.receivedByUserId),
     receivedByName: row.receivedByName ?? null,
@@ -246,6 +251,13 @@ async function createInventoryArrival({
       throw err;
     }
 
+    const actorUserId = Number(actorUser?.id);
+    if (!Number.isInteger(actorUserId) || actorUserId <= 0) {
+      const err = new Error("Invalid actor user");
+      err.code = "BAD_USER";
+      throw err;
+    }
+
     const lines = [];
     let totalAmount = 0;
 
@@ -277,7 +289,8 @@ async function createInventoryArrival({
         sourceId: sourceId == null ? null : Number(sourceId),
         notes: cleanText(notes, 4000),
         totalAmount,
-        receivedByUserId: Number(actorUser.id),
+        createdByUserId: actorUserId,
+        receivedByUserId: actorUserId,
         receivedAt: parseDateOrNow(receivedAt),
         createdAt: new Date(),
       })
@@ -305,7 +318,7 @@ async function createInventoryArrival({
       await adjustInventory(
         {
           locationId: Number(locationId),
-          userId: Number(actorUser.id),
+          userId: actorUserId,
           productId: line.productId,
           qtyChange: line.stockQtyReceived,
           reason: `Stock arrival #${arrival.id}`,
@@ -325,7 +338,7 @@ async function createInventoryArrival({
     await safeLogAudit({
       request,
       locationId: Number(locationId),
-      userId: Number(actorUser.id),
+      userId: actorUserId,
       action: "INVENTORY_ARRIVAL_CREATE",
       entity: "inventory_arrival",
       entityId: Number(arrival.id),
@@ -356,6 +369,7 @@ async function createInventoryArrival({
         sourceId: arrival.sourceId == null ? null : Number(arrival.sourceId),
         notes: arrival.notes ?? null,
         totalAmount: Number(arrival.totalAmount || 0),
+        createdByUserId: Number(arrival.createdByUserId),
         receivedByUserId: Number(arrival.receivedByUserId),
         receivedAt: arrival.receivedAt,
         createdAt: arrival.createdAt,
@@ -434,8 +448,10 @@ async function listInventoryArrivals({
       OR COALESCE(l.name, '') ILIKE ${like}
       OR COALESCE(l.code, '') ILIKE ${like}
       OR COALESCE(s.name, '') ILIKE ${like}
-      OR COALESCE(u.name, '') ILIKE ${like}
-      OR COALESCE(u.email, '') ILIKE ${like}
+      OR COALESCE(cu.name, '') ILIKE ${like}
+      OR COALESCE(cu.email, '') ILIKE ${like}
+      OR COALESCE(ru.name, '') ILIKE ${like}
+      OR COALESCE(ru.email, '') ILIKE ${like}
     )`;
   }
 
@@ -457,9 +473,13 @@ async function listInventoryArrivals({
 
       ia.total_amount as "totalAmount",
 
+      ia.created_by_user_id as "createdByUserId",
+      cu.name as "createdByName",
+      cu.email as "createdByEmail",
+
       ia.received_by_user_id as "receivedByUserId",
-      u.name as "receivedByName",
-      u.email as "receivedByEmail",
+      ru.name as "receivedByName",
+      ru.email as "receivedByEmail",
 
       ia.received_at as "receivedAt",
       ia.created_at as "createdAt",
@@ -481,8 +501,10 @@ async function listInventoryArrivals({
       ON l.id = ia.location_id
     LEFT JOIN suppliers s
       ON s.id = ia.supplier_id
-    LEFT JOIN users u
-      ON u.id = ia.received_by_user_id
+    LEFT JOIN users cu
+      ON cu.id = ia.created_by_user_id
+    LEFT JOIN users ru
+      ON ru.id = ia.received_by_user_id
     WHERE ${where}
     ORDER BY ia.id DESC
     LIMIT ${lim}
@@ -521,9 +543,13 @@ async function getInventoryArrivalById({ arrivalId, locationId = null }) {
 
       ia.total_amount as "totalAmount",
 
+      ia.created_by_user_id as "createdByUserId",
+      cu.name as "createdByName",
+      cu.email as "createdByEmail",
+
       ia.received_by_user_id as "receivedByUserId",
-      u.name as "receivedByName",
-      u.email as "receivedByEmail",
+      ru.name as "receivedByName",
+      ru.email as "receivedByEmail",
 
       ia.received_at as "receivedAt",
       ia.created_at as "createdAt"
@@ -532,8 +558,10 @@ async function getInventoryArrivalById({ arrivalId, locationId = null }) {
       ON l.id = ia.location_id
     LEFT JOIN suppliers s
       ON s.id = ia.supplier_id
-    LEFT JOIN users u
-      ON u.id = ia.received_by_user_id
+    LEFT JOIN users cu
+      ON cu.id = ia.created_by_user_id
+    LEFT JOIN users ru
+      ON ru.id = ia.received_by_user_id
     WHERE ${where}
     LIMIT 1
   `);
