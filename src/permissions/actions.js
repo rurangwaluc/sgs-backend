@@ -1,3 +1,5 @@
+"use strict";
+
 /**
  * Unified Actions / Permissions
  * - Backward compatible with legacy permissions
@@ -155,6 +157,9 @@ const ACTIONS = {
   // =====================
   PAYMENT_RECORD: "PAYMENT_RECORD",
   PAYMENT_VIEW: "PAYMENT_VIEW",
+
+  // ✅ Owner money / owner payments
+  OWNER_PAYMENTS_VIEW: "OWNER_PAYMENTS_VIEW",
 
   CASH_SESSION_VIEW: "CASH_SESSION_VIEW",
   CASH_SESSION_OPEN: "CASH_SESSION_OPEN",
