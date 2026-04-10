@@ -1,6 +1,8 @@
 // backend/src/controllers/cashReconcileController.js
 
-const { createCashReconcileSchema } = require("../validators/cashReconcile.schema");
+const {
+  createCashReconcileSchema,
+} = require("../validators/cashReconcile.schema");
 const cashReconcileService = require("../services/cashReconcileService");
 
 function pickInt(...vals) {
@@ -19,7 +21,7 @@ function extractErrMessage(e) {
       e.err?.message ||
       e.cause?.message ||
       e.originalError?.message ||
-      ""
+      "",
   );
 }
 
@@ -40,17 +42,20 @@ async function createCashReconcile(request, reply) {
     request.user?.id,
     request.user?.userId,
     request.user?.user_id,
-    request.user?.uid
+    request.user?.uid,
   );
 
   const locationId = pickInt(
     request.user?.locationId,
     request.user?.location_id,
-    request.user?.locId
+    request.user?.locId,
   );
 
   if (!cashierId || !locationId) {
-    request.log.error({ user: request.user }, "Missing user id or location id on request.user");
+    request.log.error(
+      { user: request.user },
+      "Missing user id or location id on request.user",
+    );
     return reply.status(401).send({ error: "Not authenticated" });
   }
 
@@ -73,24 +78,43 @@ async function createCashReconcile(request, reply) {
     }
 
     // clean service codes
-    if (e.code === "SESSION_NOT_FOUND") return reply.status(404).send({ error: e.message });
+    if (e.code === "SESSION_NOT_FOUND")
+      return reply.status(404).send({ error: e.message });
 
-    if (e.code === "BAD_CASHIER" || e.code === "BAD_LOCATION" || e.code === "BAD_SESSION") {
+    if (
+      e.code === "BAD_CASHIER" ||
+      e.code === "BAD_LOCATION" ||
+      e.code === "BAD_SESSION"
+    ) {
       return reply.status(400).send({ error: e.message });
     }
 
-    if (e.code === "BAD_AMOUNT") return reply.status(400).send({ error: e.message });
+    if (e.code === "BAD_AMOUNT")
+      return reply.status(400).send({ error: e.message });
 
-    if (e.code === "NOT_YOUR_SESSION") return reply.status(403).send({ error: e.message });
+    if (e.code === "NOT_YOUR_SESSION")
+      return reply.status(403).send({ error: e.message });
 
-    request.log.error({ err: e, msg: extractErrMessage(e) }, "createCashReconcile failed");
+    if (e.code === "ALREADY_RECONCILED") {
+      return reply.status(409).send({ error: e.message });
+    }
+
+    request.log.error(
+      { err: e, msg: extractErrMessage(e) },
+      "createCashReconcile failed",
+    );
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
 async function listCashReconciles(request, reply) {
-  const locationId = pickInt(request.user?.locationId, request.user?.location_id, request.user?.locId);
-  if (!locationId) return reply.status(401).send({ error: "Not authenticated" });
+  const locationId = pickInt(
+    request.user?.locationId,
+    request.user?.location_id,
+    request.user?.locId,
+  );
+  if (!locationId)
+    return reply.status(401).send({ error: "Not authenticated" });
 
   try {
     const rows = await cashReconcileService.listReconciles({ locationId });

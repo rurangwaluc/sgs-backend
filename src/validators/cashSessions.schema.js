@@ -1,19 +1,14 @@
-// backend/src/validators/cashSessions.schema.js
-
 const { z } = require("zod");
 
 const openCashSessionSchema = z.object({
   openingBalance: z.number().int().min(0).default(0),
+  openingVarianceReason: z.string().trim().max(300).optional(),
 });
 
-/**
- * Production rule:
- * - Closing a session should NOT ask for a cash amount.
- * - Closing means: stop all new cash movements (lock session).
- * - Reconcile is where cashier enters counted cash.
- */
 const closeCashSessionSchema = z.object({
-  note: z.string().max(200).optional(),
+  countedCash: z.number().int().min(0),
+  closingVarianceReason: z.string().trim().max(300).optional(),
+  note: z.string().trim().max(200).optional(),
 });
 
 module.exports = { openCashSessionSchema, closeCashSessionSchema };

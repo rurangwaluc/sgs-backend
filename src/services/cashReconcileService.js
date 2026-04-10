@@ -1,11 +1,10 @@
-// backend/src/services/cashReconcileService.js
-
 const { db } = require("../config/db");
-const { cashReconciliations } = require("../db/schema/cash_reconciliations.schema");
+const {
+  cashReconciliations,
+} = require("../db/schema/cash_reconciliations.schema");
 const { cashSessions } = require("../db/schema/cash_sessions.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { and, eq, desc } = require("drizzle-orm");
-const { sql } = require("drizzle-orm");
 
 function toMoneyNumber(v) {
   if (v === null || v === undefined) return NaN;
@@ -33,71 +32,112 @@ function makeErr(code, message, debug) {
   return err;
 }
 
+function getOfficialClosedCash(session) {
+  const countedClosingBalance = Number(
+    session?.countedClosingBalance ?? session?.counted_closing_balance,
+  );
+  if (Number.isFinite(countedClosingBalance)) return countedClosingBalance;
+
+  const closingBalance = Number(
+    session?.closingBalance ?? session?.closing_balance,
+  );
+  if (Number.isFinite(closingBalance)) return closingBalance;
+
+  return 0;
+}
+
 /**
- * STRICT reconcile:
- * - One reconcile per session (immutable once created)
- * - countedCash from client
- * - expectedCash computed by DB trigger/function
- * - session must be CLOSED
+ * Reconcile = later verification of the official closed day result
+ * - One reconcile per session
+ * - Session must be CLOSED
+ * - expectedCash = official close cash saved on cash_sessions
+ * - difference = countedCash - expectedCash
  */
-async function createReconcile({ locationId, cashierId, cashSessionId, countedCash, note }) {
+async function createReconcile({
+  locationId,
+  cashierId,
+  cashSessionId,
+  countedCash,
+  note,
+}) {
   const locId = toInt(locationId);
   const cashId = toInt(cashierId);
   const sessId = toInt(cashSessionId);
 
-  if (!Number.isInteger(locId) || locId <= 0) throw makeErr("BAD_LOCATION", "Invalid locationId");
-  if (!Number.isInteger(cashId) || cashId <= 0) throw makeErr("BAD_CASHIER", "Invalid cashierId");
-  if (!Number.isInteger(sessId) || sessId <= 0) throw makeErr("BAD_SESSION", "Invalid cashSessionId");
+  if (!Number.isInteger(locId) || locId <= 0) {
+    throw makeErr("BAD_LOCATION", "Invalid locationId");
+  }
+  if (!Number.isInteger(cashId) || cashId <= 0) {
+    throw makeErr("BAD_CASHIER", "Invalid cashierId");
+  }
+  if (!Number.isInteger(sessId) || sessId <= 0) {
+    throw makeErr("BAD_SESSION", "Invalid cashSessionId");
+  }
 
   const cnt = toMoneyNumber(countedCash);
-  if (!Number.isFinite(cnt) || cnt < 0) throw makeErr("BAD_AMOUNT", "Invalid countedCash");
+  if (!Number.isFinite(cnt) || cnt < 0) {
+    throw makeErr("BAD_AMOUNT", "Invalid countedCash");
+  }
 
-  const cleanNote = typeof note === "string" && note.trim() ? note.trim().slice(0, 200) : null;
+  const cleanNote =
+    typeof note === "string" && note.trim() ? note.trim().slice(0, 200) : null;
 
   return db.transaction(async (tx) => {
     // 1) session exists + belongs to location
     const sessRows = await tx
-      .select({
-        id: cashSessions.id,
-        locationId: cashSessions.locationId,
-        cashierId: cashSessions.cashierId,
-        status: cashSessions.status,
-      })
+      .select()
       .from(cashSessions)
-      .where(and(eq(cashSessions.id, sessId), eq(cashSessions.locationId, locId)));
+      .where(
+        and(eq(cashSessions.id, sessId), eq(cashSessions.locationId, locId)),
+      )
+      .limit(1);
 
     const sess = sessRows[0];
-    if (!sess) throw makeErr("SESSION_NOT_FOUND", "Cash session not found");
+    if (!sess) {
+      throw makeErr("SESSION_NOT_FOUND", "Cash session not found");
+    }
 
-    if (Number(sess.cashierId) !== cashId) throw makeErr("NOT_YOUR_SESSION", "This cash session is not yours");
+    if (Number(sess.cashierId) !== cashId) {
+      throw makeErr("NOT_YOUR_SESSION", "This cash session is not yours");
+    }
 
     const st = String(sess.status || "").toUpperCase();
     if (st !== "CLOSED") {
-      throw makeErr("SESSION_NOT_CLOSED", "Cash session must be CLOSED before reconciliation", {
-        status: sess.status,
-        cashSessionId: sessId,
-      });
+      throw makeErr(
+        "SESSION_NOT_CLOSED",
+        "Cash session must be CLOSED before reconciliation",
+        {
+          status: sess.status,
+          cashSessionId: sessId,
+        },
+      );
     }
 
     // 2) strict: block second reconcile attempt
-    const exists = await tx.execute(sql`
-      SELECT id FROM cash_reconciliations
-      WHERE cash_session_id = ${sessId}
-      LIMIT 1
-    `);
-    const rows = exists?.rows || exists || [];
-    if (rows.length > 0) {
+    const existingRows = await tx
+      .select({ id: cashReconciliations.id })
+      .from(cashReconciliations)
+      .where(eq(cashReconciliations.cashSessionId, sessId))
+      .limit(1);
+
+    if (existingRows.length > 0) {
       throw makeErr("ALREADY_RECONCILED", "Cash session already reconciled");
     }
 
-    // 3) insert (DB fills expected_cash, DB computes difference)
+    // 3) official close source of truth
+    const officialClosedCash = getOfficialClosedCash(sess);
+    const difference = cnt - officialClosedCash;
+
+    // 4) insert explicit expectedCash + difference
     const inserted = await tx
       .insert(cashReconciliations)
       .values({
         locationId: locId,
         cashSessionId: sessId,
         cashierId: cashId,
+        expectedCash: officialClosedCash,
         countedCash: cnt,
+        difference,
         note: cleanNote,
       })
       .returning();
@@ -110,11 +150,17 @@ async function createReconcile({ locationId, cashierId, cashSessionId, countedCa
       action: "CASH_RECONCILE_CREATE",
       entity: "cash_reconciliation",
       entityId: created.id,
-      description: `Reconcile cash session #${sessId}. counted=${cnt}`,
-      meta: null,
+      description:
+        `Cash check for session #${sessId}. ` +
+        `officialClosedCash=${officialClosedCash}, countedAgain=${cnt}, difference=${difference}`,
+      meta: {
+        cashSessionId: sessId,
+        officialClosedCash,
+        countedCash: cnt,
+        difference,
+      },
     });
 
-    // Normalize types for API (no string ids)
     return {
       id: Number(created.id),
       locationId: Number(created.locationId),
@@ -131,7 +177,9 @@ async function createReconcile({ locationId, cashierId, cashSessionId, countedCa
 
 async function listReconciles({ locationId, limit = 50 }) {
   const locId = toInt(locationId);
-  if (!Number.isInteger(locId) || locId <= 0) throw makeErr("BAD_LOCATION", "Invalid locationId");
+  if (!Number.isInteger(locId) || locId <= 0) {
+    throw makeErr("BAD_LOCATION", "Invalid locationId");
+  }
 
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
 
@@ -142,7 +190,6 @@ async function listReconciles({ locationId, limit = 50 }) {
     .orderBy(desc(cashReconciliations.createdAt))
     .limit(lim);
 
-  // Normalize types
   return (rows || []).map((r) => ({
     id: Number(r.id),
     locationId: Number(r.locationId),
