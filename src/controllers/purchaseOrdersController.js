@@ -16,9 +16,15 @@ function normalizeRole(role) {
     .toLowerCase();
 }
 
+function parsePositiveInt(value, fallback = null) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
 function parseIsoDateStart(value) {
   const s = String(value || "").trim();
   if (!s) return null;
+
   const d = new Date(`${s}T00:00:00.000Z`);
   return Number.isFinite(d.getTime()) ? d : null;
 }
@@ -26,25 +32,151 @@ function parseIsoDateStart(value) {
 function parseIsoDateEndExclusive(value) {
   const s = String(value || "").trim();
   if (!s) return null;
+
   const d = new Date(`${s}T00:00:00.000Z`);
   if (!Number.isFinite(d.getTime())) return null;
+
   d.setUTCDate(d.getUTCDate() + 1);
   return d;
+}
+
+function extractErrorMessage(error, fallback = "Internal Server Error") {
+  return error?.message || fallback;
+}
+
+function sendValidationError(reply, error, label = "Invalid payload") {
+  return reply.status(400).send({
+    error: label,
+    details: error.flatten(),
+  });
+}
+
+function sendKnownError(reply, error) {
+  if (!error?.code) return false;
+
+  if (
+    [
+      "LOCATION_NOT_FOUND",
+      "SUPPLIER_NOT_FOUND",
+      "PRODUCT_NOT_FOUND",
+      "NOT_FOUND",
+    ].includes(error.code)
+  ) {
+    reply.status(404).send({
+      error: extractErrorMessage(error),
+      debug: error.debug || undefined,
+    });
+    return true;
+  }
+
+  if (
+    [
+      "PRODUCT_ARCHIVED",
+      "BAD_ITEMS",
+      "BAD_LOCATION",
+      "BAD_SUPPLIER",
+      "BAD_CURRENCY",
+      "BAD_DATE",
+      "BAD_STATUS",
+      "LINES_LOCKED",
+      "STATUS_LOCKED",
+    ].includes(error.code)
+  ) {
+    reply.status(400).send({
+      error: extractErrorMessage(error),
+      debug: error.debug || undefined,
+    });
+    return true;
+  }
+
+  if (["HAS_RECEIPTS"].includes(error.code)) {
+    reply.status(409).send({
+      error: extractErrorMessage(error),
+      debug: error.debug || undefined,
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function requireOwnerLocationId(request, parsedData) {
+  const role = normalizeRole(request.user?.role);
+  if (role !== "owner") return request.user?.locationId || null;
+
+  const locationId = parsePositiveInt(parsedData?.locationId, null);
+  return locationId;
+}
+
+function resolveLocationIdForCreate(request, parsedData) {
+  const role = normalizeRole(request.user?.role);
+
+  if (role === "owner") {
+    const locationId = parsePositiveInt(parsedData?.locationId, null);
+    if (!locationId) {
+      const err = new Error("Owner must choose a branch");
+      err.code = "BAD_LOCATION";
+      throw err;
+    }
+    return locationId;
+  }
+
+  const locationId = parsePositiveInt(request.user?.locationId, null);
+  if (!locationId) {
+    const err = new Error("Authenticated user has no branch");
+    err.code = "BAD_LOCATION";
+    throw err;
+  }
+
+  return locationId;
+}
+
+function resolveLocationIdForList(request, parsedData) {
+  const role = normalizeRole(request.user?.role);
+
+  if (role === "owner") {
+    return parsedData?.locationId ?? null;
+  }
+
+  const locationId = parsePositiveInt(request.user?.locationId, null);
+  if (!locationId) {
+    const err = new Error("Authenticated user has no branch");
+    err.code = "BAD_LOCATION";
+    throw err;
+  }
+
+  return locationId;
+}
+
+function resolveLocationIdForRead(request) {
+  const role = normalizeRole(request.user?.role);
+
+  if (role === "owner") return null;
+
+  const locationId = parsePositiveInt(request.user?.locationId, null);
+  if (!locationId) {
+    const err = new Error("Authenticated user has no branch");
+    err.code = "BAD_LOCATION";
+    throw err;
+  }
+
+  return locationId;
 }
 
 async function createPurchaseOrder(request, reply) {
   const parsed = createPurchaseOrderSchema.safeParse(request.body || {});
   if (!parsed.success) {
-    return reply.status(400).send({
-      error: "Invalid payload",
-      details: parsed.error.flatten(),
-    });
+    return sendValidationError(reply, parsed.error, "Invalid payload");
   }
 
-  const isOwner = normalizeRole(request.user?.role) === "owner";
-  const effectiveLocationId = isOwner
-    ? parsed.data.locationId || request.user.locationId
-    : request.user.locationId;
+  let effectiveLocationId;
+  try {
+    effectiveLocationId = resolveLocationIdForCreate(request, parsed.data);
+  } catch (error) {
+    if (sendKnownError(reply, error)) return;
+    request.log.error({ err: error }, "resolveLocationIdForCreate failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
 
   try {
     const out = await purchaseOrdersService.createPurchaseOrder({
@@ -65,44 +197,23 @@ async function createPurchaseOrder(request, reply) {
       purchaseOrder: out.purchaseOrder,
       items: out.items,
     });
-  } catch (e) {
-    if (
-      [
-        "LOCATION_NOT_FOUND",
-        "SUPPLIER_NOT_FOUND",
-        "PRODUCT_NOT_FOUND",
-      ].includes(e.code)
-    ) {
-      return reply.status(404).send({
-        error: e.message,
-        debug: e.debug || undefined,
-      });
-    }
+  } catch (error) {
+    if (sendKnownError(reply, error)) return;
 
-    if (["PRODUCT_ARCHIVED", "BAD_ITEMS"].includes(e.code)) {
-      return reply.status(400).send({
-        error: e.message,
-        debug: e.debug || undefined,
-      });
-    }
-
-    request.log.error({ err: e }, "createPurchaseOrder failed");
+    request.log.error({ err: error }, "createPurchaseOrder failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
 async function updatePurchaseOrder(request, reply) {
-  const purchaseOrderId = Number(request.params?.id);
-  if (!Number.isInteger(purchaseOrderId) || purchaseOrderId <= 0) {
+  const purchaseOrderId = parsePositiveInt(request.params?.id, null);
+  if (!purchaseOrderId) {
     return reply.status(400).send({ error: "Invalid purchase order id" });
   }
 
   const parsed = updatePurchaseOrderSchema.safeParse(request.body || {});
   if (!parsed.success) {
-    return reply.status(400).send({
-      error: "Invalid payload",
-      details: parsed.error.flatten(),
-    });
+    return sendValidationError(reply, parsed.error, "Invalid payload");
   }
 
   try {
@@ -124,47 +235,23 @@ async function updatePurchaseOrder(request, reply) {
       purchaseOrder: out.purchaseOrder,
       items: out.items,
     });
-  } catch (e) {
-    if (
-      ["NOT_FOUND", "SUPPLIER_NOT_FOUND", "PRODUCT_NOT_FOUND"].includes(e.code)
-    ) {
-      return reply.status(404).send({
-        error: e.message,
-        debug: e.debug || undefined,
-      });
-    }
+  } catch (error) {
+    if (sendKnownError(reply, error)) return;
 
-    if (
-      [
-        "STATUS_LOCKED",
-        "LINES_LOCKED",
-        "PRODUCT_ARCHIVED",
-        "BAD_ITEMS",
-      ].includes(e.code)
-    ) {
-      return reply.status(400).send({
-        error: e.message,
-        debug: e.debug || undefined,
-      });
-    }
-
-    request.log.error({ err: e }, "updatePurchaseOrder failed");
+    request.log.error({ err: error }, "updatePurchaseOrder failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
 async function approvePurchaseOrder(request, reply) {
-  const purchaseOrderId = Number(request.params?.id);
-  if (!Number.isInteger(purchaseOrderId) || purchaseOrderId <= 0) {
+  const purchaseOrderId = parsePositiveInt(request.params?.id, null);
+  if (!purchaseOrderId) {
     return reply.status(400).send({ error: "Invalid purchase order id" });
   }
 
   const parsed = approvePurchaseOrderSchema.safeParse(request.body || {});
   if (!parsed.success) {
-    return reply.status(400).send({
-      error: "Invalid payload",
-      details: parsed.error.flatten(),
-    });
+    return sendValidationError(reply, parsed.error, "Invalid payload");
   }
 
   try {
@@ -178,32 +265,27 @@ async function approvePurchaseOrder(request, reply) {
       purchaseOrder: out.purchaseOrder,
       items: out.items,
     });
-  } catch (e) {
-    if (e.code === "NOT_FOUND") {
-      return reply.status(404).send({ error: e.message });
+  } catch (error) {
+    if (error?.code === "BAD_STATUS") {
+      return reply.status(409).send({ error: extractErrorMessage(error) });
     }
 
-    if (e.code === "BAD_STATUS") {
-      return reply.status(409).send({ error: e.message });
-    }
+    if (sendKnownError(reply, error)) return;
 
-    request.log.error({ err: e }, "approvePurchaseOrder failed");
+    request.log.error({ err: error }, "approvePurchaseOrder failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
 async function cancelPurchaseOrder(request, reply) {
-  const purchaseOrderId = Number(request.params?.id);
-  if (!Number.isInteger(purchaseOrderId) || purchaseOrderId <= 0) {
+  const purchaseOrderId = parsePositiveInt(request.params?.id, null);
+  if (!purchaseOrderId) {
     return reply.status(400).send({ error: "Invalid purchase order id" });
   }
 
   const parsed = cancelPurchaseOrderSchema.safeParse(request.body || {});
   if (!parsed.success) {
-    return reply.status(400).send({
-      error: "Invalid payload",
-      details: parsed.error.flatten(),
-    });
+    return sendValidationError(reply, parsed.error, "Invalid payload");
   }
 
   try {
@@ -218,16 +300,14 @@ async function cancelPurchaseOrder(request, reply) {
       purchaseOrder: out.purchaseOrder,
       items: out.items,
     });
-  } catch (e) {
-    if (e.code === "NOT_FOUND") {
-      return reply.status(404).send({ error: e.message });
+  } catch (error) {
+    if (error?.code === "BAD_STATUS" || error?.code === "HAS_RECEIPTS") {
+      return reply.status(409).send({ error: extractErrorMessage(error) });
     }
 
-    if (["BAD_STATUS", "HAS_RECEIPTS"].includes(e.code)) {
-      return reply.status(409).send({ error: e.message });
-    }
+    if (sendKnownError(reply, error)) return;
 
-    request.log.error({ err: e }, "cancelPurchaseOrder failed");
+    request.log.error({ err: error }, "cancelPurchaseOrder failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -241,12 +321,16 @@ async function listPurchaseOrders(request, reply) {
     });
   }
 
+  let effectiveLocationId;
   try {
-    const isOwner = normalizeRole(request.user?.role) === "owner";
-    const effectiveLocationId = isOwner
-      ? (parsed.data.locationId ?? null)
-      : request.user.locationId;
+    effectiveLocationId = resolveLocationIdForList(request, parsed.data);
+  } catch (error) {
+    if (sendKnownError(reply, error)) return;
+    request.log.error({ err: error }, "resolveLocationIdForList failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
 
+  try {
     const result = await purchaseOrdersService.listPurchaseOrders({
       locationId: effectiveLocationId,
       supplierId: parsed.data.supplierId ?? null,
@@ -263,22 +347,30 @@ async function listPurchaseOrders(request, reply) {
       purchaseOrders: result.rows,
       nextCursor: result.nextCursor,
     });
-  } catch (e) {
-    request.log.error({ err: e }, "listPurchaseOrders failed");
+  } catch (error) {
+    if (sendKnownError(reply, error)) return;
+
+    request.log.error({ err: error }, "listPurchaseOrders failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
 
 async function getPurchaseOrderById(request, reply) {
-  const purchaseOrderId = Number(request.params?.id);
-  if (!Number.isInteger(purchaseOrderId) || purchaseOrderId <= 0) {
+  const purchaseOrderId = parsePositiveInt(request.params?.id, null);
+  if (!purchaseOrderId) {
     return reply.status(400).send({ error: "Invalid purchase order id" });
   }
 
+  let effectiveLocationId;
   try {
-    const isOwner = normalizeRole(request.user?.role) === "owner";
-    const effectiveLocationId = isOwner ? null : request.user.locationId;
+    effectiveLocationId = resolveLocationIdForRead(request);
+  } catch (error) {
+    if (sendKnownError(reply, error)) return;
+    request.log.error({ err: error }, "resolveLocationIdForRead failed");
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
 
+  try {
     const out = await purchaseOrdersService.getPurchaseOrderById({
       purchaseOrderId,
       locationId: effectiveLocationId,
@@ -293,8 +385,10 @@ async function getPurchaseOrderById(request, reply) {
       purchaseOrder: out.purchaseOrder,
       items: out.items,
     });
-  } catch (e) {
-    request.log.error({ err: e }, "getPurchaseOrderById failed");
+  } catch (error) {
+    if (sendKnownError(reply, error)) return;
+
+    request.log.error({ err: error }, "getPurchaseOrderById failed");
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }

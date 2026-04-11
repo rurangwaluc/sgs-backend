@@ -18,6 +18,7 @@ const REVERSE_ALIASES = (() => {
 })();
 
 const policy = {
+  // Owner inherits every action that exists — including all future additions.
   [ROLES.OWNER]: [...ALL_ACTION_STRINGS],
 
   [ROLES.ADMIN]: [
@@ -120,6 +121,13 @@ const policy = {
     ACTIONS.SUPPLIER_BILL_PAYMENT_CREATE,
     ACTIONS.SUPPLIER_REPORT_VIEW,
 
+    // Purchase orders — admin can do everything with purchase orders
+    ACTIONS.PURCHASE_ORDER_VIEW,
+    ACTIONS.PURCHASE_ORDER_CREATE,
+    ACTIONS.PURCHASE_ORDER_UPDATE,
+    ACTIONS.PURCHASE_ORDER_APPROVE,
+    ACTIONS.PURCHASE_ORDER_CANCEL,
+
     ACTIONS.CASH_LEDGER_MANAGE,
     ACTIONS.CASH_LEDGER_VIEW,
 
@@ -180,12 +188,20 @@ const policy = {
     ACTIONS.SUPPLIER_BILL_UPDATE,
     ACTIONS.SUPPLIER_REPORT_VIEW,
 
+    // Purchase orders — manager can view, create, update, and approve
+    // Cannot cancel (that is an admin-level override)
+    ACTIONS.PURCHASE_ORDER_VIEW,
+    ACTIONS.PURCHASE_ORDER_CREATE,
+    ACTIONS.PURCHASE_ORDER_UPDATE,
+    ACTIONS.PURCHASE_ORDER_APPROVE,
+
     ACTIONS.MANAGER_DASHBOARD_VIEW,
     ACTIONS.CUSTOMER_VIEW,
   ],
 
+  // Store keeper receives goods against purchase orders but does not create,
+  // approve, or cancel them. They see the PO list so they know what stock is incoming.
   [ROLES.STORE_KEEPER]: [
-    ACTIONS.INVENTORY_CREATE,
     ACTIONS.AUTH_ME,
     ACTIONS.MESSAGE_CREATE,
     ACTIONS.MESSAGE_VIEW,
@@ -198,6 +214,7 @@ const policy = {
     ACTIONS.NOTIFICATION_MARK_READ,
 
     ACTIONS.INVENTORY_VIEW,
+    ACTIONS.INVENTORY_CREATE,
     ACTIONS.INVENTORY_ARRIVAL_CREATE,
     ACTIONS.INVENTORY_ARRIVAL_VIEW,
 
@@ -214,6 +231,9 @@ const policy = {
 
     ACTIONS.SALE_VIEW,
     ACTIONS.SALE_FULFILL,
+
+    // Purchase orders — store keeper can view POs to know what stock is incoming
+    ACTIONS.PURCHASE_ORDER_VIEW,
 
     ACTIONS.UPLOAD_CREATE,
     ACTIONS.UPLOAD_VIEW,

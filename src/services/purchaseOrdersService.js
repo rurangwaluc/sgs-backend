@@ -21,6 +21,7 @@ function clampInt(n, min, max, fallback) {
 }
 
 function toInt(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
@@ -62,6 +63,20 @@ function parseDateOrNull(value) {
   if (!s) return null;
   const d = new Date(s);
   return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function buildProductDisplayName(product) {
+  return [
+    cleanText(product?.name, 180),
+    cleanText(product?.brand, 80),
+    cleanText(product?.model, 120),
+    cleanText(product?.size, 40),
+    cleanText(product?.color, 40),
+    cleanText(product?.variantLabel, 120),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 }
 
 async function getLocationOrThrow(tx, locationId) {
@@ -114,13 +129,15 @@ async function getProductForPO(tx, { locationId, productId }) {
       id: products.id,
       locationId: products.locationId,
       name: products.name,
-      displayName: products.displayName,
       sku: products.sku,
-      stockUnit: products.stockUnit,
-      purchaseUnit: products.purchaseUnit,
-      purchaseUnitFactor: products.purchaseUnitFactor,
+      unit: products.unit,
       costPrice: products.costPrice,
       isActive: products.isActive,
+      brand: products.brand,
+      model: products.model,
+      size: products.size,
+      color: products.color,
+      variantLabel: products.variantLabel,
     })
     .from(products)
     .where(
@@ -136,21 +153,28 @@ async function getProductForPO(tx, { locationId, productId }) {
 
 function computePOItem(product, rawItem) {
   const qtyOrdered = Math.max(1, toInt(rawItem.qtyOrdered, 1) || 1);
-  const unitCost = Math.max(0, toInt(rawItem.unitCost, 0) || 0);
+  const unitCost = Math.max(
+    0,
+    toInt(rawItem.unitCost, product ? toInt(product.costPrice, 0) || 0 : 0) ||
+      0,
+  );
   const lineTotal = qtyOrdered * unitCost;
 
   if (product) {
+    const stockUnit = cleanText(product.unit, 30) || "PIECE";
+    const purchaseUnit = stockUnit;
+    const purchaseUnitFactor = 1;
+    const productDisplayName =
+      buildProductDisplayName(product) || cleanText(product.name, 180);
+
     return {
       productId: Number(product.id),
-      productName: product.name,
-      productDisplayName: product.displayName || product.name,
-      productSku: product.sku || null,
-      stockUnit: product.stockUnit || "PIECE",
-      purchaseUnit: product.purchaseUnit || product.stockUnit || "PIECE",
-      purchaseUnitFactor: Math.max(
-        1,
-        toInt(product.purchaseUnitFactor, 1) || 1,
-      ),
+      productName: cleanText(product.name, 180),
+      productDisplayName,
+      productSku: cleanText(product.sku, 80),
+      stockUnit,
+      purchaseUnit,
+      purchaseUnitFactor,
       qtyOrdered,
       qtyReceived: 0,
       unitCost,
@@ -274,8 +298,16 @@ async function createPurchaseOrder({
   items,
 }) {
   return db.transaction(async (tx) => {
-    await getLocationOrThrow(tx, locationId);
+    const location = await getLocationOrThrow(tx, locationId);
     const supplier = await getSupplierOrThrow(tx, supplierId);
+
+    if (String(location.status || "").toUpperCase() !== "ACTIVE") {
+      const err = new Error(
+        "Purchase order can only be created for an active branch",
+      );
+      err.code = "BAD_LOCATION";
+      throw err;
+    }
 
     const lines = [];
     let subtotalAmount = 0;
@@ -475,6 +507,12 @@ async function updatePurchaseOrder({
         const line = computePOItem(product, item);
         lines.push(line);
         subtotalAmount += Number(line.lineTotal || 0);
+      }
+
+      if (!lines.length) {
+        const err = new Error("Purchase order items are required");
+        err.code = "BAD_ITEMS";
+        throw err;
       }
 
       await tx.execute(sql`
@@ -692,8 +730,8 @@ async function listPurchaseOrders({
       OR COALESCE(s.name, '') ILIKE ${like}
       OR COALESCE(l.name, '') ILIKE ${like}
       OR COALESCE(l.code, '') ILIKE ${like}
-      OR COALESCE(u.name, '') ILIKE ${like}
-      OR COALESCE(u.email, '') ILIKE ${like}
+      OR COALESCE(cu.name, '') ILIKE ${like}
+      OR COALESCE(cu.email, '') ILIKE ${like}
     )`;
   }
 
