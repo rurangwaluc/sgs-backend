@@ -6,14 +6,17 @@ const ALL_ACTION_STRINGS = Object.values(ACTIONS).filter(
 );
 
 const ALIASES = ACTIONS.__ALIASES__ || {};
+
 const REVERSE_ALIASES = (() => {
   const reverse = {};
+
   for (const [legacy, targets] of Object.entries(ALIASES)) {
-    for (const t of targets) {
-      if (!reverse[t]) reverse[t] = new Set();
-      reverse[t].add(legacy);
+    for (const target of targets) {
+      if (!reverse[target]) reverse[target] = new Set();
+      reverse[target].add(legacy);
     }
   }
+
   return reverse;
 })();
 
@@ -56,6 +59,8 @@ const policy = {
     ACTIONS.INVENTORY_ADJUST,
     ACTIONS.INVENTORY_ARRIVAL_CREATE,
     ACTIONS.INVENTORY_ARRIVAL_VIEW,
+    ACTIONS.GOODS_RECEIPT_CREATE,
+    ACTIONS.GOODS_RECEIPT_VIEW,
 
     ACTIONS.INVENTORY_ADJUST_REQUEST_CREATE,
     ACTIONS.INVENTORY_ADJUST_REQUEST_VIEW,
@@ -155,6 +160,7 @@ const policy = {
 
     ACTIONS.INVENTORY_VIEW,
     ACTIONS.INVENTORY_ARRIVAL_VIEW,
+    ACTIONS.GOODS_RECEIPT_VIEW,
     ACTIONS.INVENTORY_ADJUST_REQUEST_VIEW,
     ACTIONS.INVENTORY_ADJUST_REQUEST_DECIDE,
 
@@ -188,8 +194,8 @@ const policy = {
     ACTIONS.SUPPLIER_BILL_UPDATE,
     ACTIONS.SUPPLIER_REPORT_VIEW,
 
-    // Purchase orders — manager can view, create, update, and approve
-    // Cannot cancel (that is an admin-level override)
+    // Purchase orders — manager can view, create, update, approve,
+    // and operationally follow receiving.
     ACTIONS.PURCHASE_ORDER_VIEW,
     ACTIONS.PURCHASE_ORDER_CREATE,
     ACTIONS.PURCHASE_ORDER_UPDATE,
@@ -217,6 +223,8 @@ const policy = {
     ACTIONS.INVENTORY_CREATE,
     ACTIONS.INVENTORY_ARRIVAL_CREATE,
     ACTIONS.INVENTORY_ARRIVAL_VIEW,
+    ACTIONS.GOODS_RECEIPT_CREATE,
+    ACTIONS.GOODS_RECEIPT_VIEW,
 
     ACTIONS.INVENTORY_ADJUST_REQUEST_CREATE,
     ACTIONS.INVENTORY_ADJUST_REQUEST_VIEW,

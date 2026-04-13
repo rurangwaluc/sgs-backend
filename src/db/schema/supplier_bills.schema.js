@@ -9,10 +9,13 @@ const {
   date,
   timestamp,
   index,
+  bigint,
 } = require("drizzle-orm/pg-core");
 
 const { suppliers } = require("./suppliers.schema");
 const { locations } = require("./locations.schema");
+const { purchaseOrders } = require("./purchase_orders.schema");
+const { goodsReceipts } = require("./goods_receipts.schema");
 
 const supplierBills = pgTable(
   "supplier_bills",
@@ -26,6 +29,16 @@ const supplierBills = pgTable(
     locationId: integer("location_id")
       .notNull()
       .references(() => locations.id, { onDelete: "restrict" }),
+
+    purchaseOrderId: bigint("purchase_order_id", { mode: "number" }).references(
+      () => purchaseOrders.id,
+      { onDelete: "set null" },
+    ),
+
+    goodsReceiptId: bigint("goods_receipt_id", { mode: "number" }).references(
+      () => goodsReceipts.id,
+      { onDelete: "set null" },
+    ),
 
     billNo: varchar("bill_no", { length: 80 }),
 
@@ -57,6 +70,12 @@ const supplierBills = pgTable(
     ),
     supplierBillsLocationIdx: index("supplier_bills_location_idx").on(
       t.locationId,
+    ),
+    supplierBillsPurchaseOrderIdx: index(
+      "supplier_bills_purchase_order_idx",
+    ).on(t.purchaseOrderId),
+    supplierBillsGoodsReceiptIdx: index("supplier_bills_goods_receipt_idx").on(
+      t.goodsReceiptId,
     ),
     supplierBillsStatusIdx: index("supplier_bills_status_idx").on(t.status),
     supplierBillsDueDateIdx: index("supplier_bills_due_date_idx").on(t.dueDate),

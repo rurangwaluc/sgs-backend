@@ -1,7 +1,7 @@
 "use strict";
 
 const { db } = require("../config/db");
-const { sql, eq, and } = require("drizzle-orm");
+const { sql, eq } = require("drizzle-orm");
 
 const { goodsReceipts } = require("../db/schema/goods_receipts.schema");
 const {
@@ -25,6 +25,7 @@ function clampInt(n, min, max, fallback) {
 }
 
 function toInt(value, fallback = null) {
+  if (value === null || value === undefined || value === "") return fallback;
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
@@ -81,6 +82,27 @@ function mapGoodsReceiptRow(row) {
   };
 }
 
+function mapGoodsReceiptItemRow(row) {
+  return {
+    id: Number(row.id),
+    goodsReceiptId: Number(row.goodsReceiptId),
+    purchaseOrderItemId: Number(row.purchaseOrderItemId),
+    productId: Number(row.productId),
+    productName: row.productName ?? null,
+    productDisplayName: row.productDisplayName ?? null,
+    productSku: row.productSku ?? null,
+    stockUnit: row.stockUnit ?? "PIECE",
+    purchaseUnit: row.purchaseUnit ?? "PIECE",
+    purchaseUnitFactor: Number(row.purchaseUnitFactor || 1),
+    qtyReceivedPurchase: Number(row.qtyReceivedPurchase || 0),
+    qtyReceivedStock: Number(row.qtyReceivedStock || 0),
+    unitCost: Number(row.unitCost || 0),
+    lineTotal: Number(row.lineTotal || 0),
+    note: row.note ?? null,
+    createdAt: row.createdAt,
+  };
+}
+
 async function getPurchaseOrderOrThrow(tx, { purchaseOrderId, locationId }) {
   const rows = await tx.execute(sql`
     SELECT
@@ -129,6 +151,49 @@ async function getPurchaseOrderItems(tx, purchaseOrderId) {
   `);
 
   return rows.rows || rows || [];
+}
+
+async function getLocationOrThrow(tx, locationId) {
+  const rows = await tx
+    .select({
+      id: locations.id,
+      name: locations.name,
+      code: locations.code,
+      status: locations.status,
+    })
+    .from(locations)
+    .where(eq(locations.id, Number(locationId)))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    const err = new Error("Branch not found");
+    err.code = "LOCATION_NOT_FOUND";
+    throw err;
+  }
+
+  return row;
+}
+
+async function getSupplierOrThrow(tx, supplierId) {
+  const rows = await tx
+    .select({
+      id: suppliers.id,
+      name: suppliers.name,
+      isActive: suppliers.isActive,
+    })
+    .from(suppliers)
+    .where(eq(suppliers.id, Number(supplierId)))
+    .limit(1);
+
+  const row = rows[0];
+  if (!row) {
+    const err = new Error("Supplier not found");
+    err.code = "SUPPLIER_NOT_FOUND";
+    throw err;
+  }
+
+  return row;
 }
 
 async function createInventoryBalanceIfMissing(tx, { locationId, productId }) {
@@ -181,6 +246,87 @@ async function recalcAndUpdatePurchaseOrderStatus(tx, purchaseOrderId) {
   };
 }
 
+async function getGoodsReceiptByIdWithExecutor(
+  executor,
+  { goodsReceiptId, locationId = null },
+) {
+  const id = toInt(goodsReceiptId, null);
+  if (!id) return null;
+
+  let where = sql`gr.id = ${id}`;
+  if (locationId != null) {
+    where = sql`${where} AND gr.location_id = ${Number(locationId)}`;
+  }
+
+  const headRes = await executor.execute(sql`
+    SELECT
+      gr.id,
+      gr.location_id as "locationId",
+      l.name as "locationName",
+      l.code as "locationCode",
+
+      gr.purchase_order_id as "purchaseOrderId",
+
+      gr.supplier_id as "supplierId",
+      s.name as "supplierName",
+
+      gr.receipt_no as "receiptNo",
+      gr.reference as "reference",
+      gr.note as "note",
+
+      gr.received_by_user_id as "receivedByUserId",
+      u.name as "receivedByName",
+      u.email as "receivedByEmail",
+
+      gr.received_at as "receivedAt",
+      gr.total_lines as "totalLines",
+      gr.total_units_received as "totalUnitsReceived",
+      gr.total_amount as "totalAmount",
+      gr.created_at as "createdAt",
+      gr.updated_at as "updatedAt"
+    FROM goods_receipts gr
+    JOIN locations l
+      ON l.id = gr.location_id
+    JOIN suppliers s
+      ON s.id = gr.supplier_id
+    LEFT JOIN users u
+      ON u.id = gr.received_by_user_id
+    WHERE ${where}
+    LIMIT 1
+  `);
+
+  const head = (headRes.rows || headRes || [])[0];
+  if (!head) return null;
+
+  const itemsRes = await executor.execute(sql`
+    SELECT
+      gri.id,
+      gri.goods_receipt_id as "goodsReceiptId",
+      gri.purchase_order_item_id as "purchaseOrderItemId",
+      gri.product_id as "productId",
+      gri.product_name as "productName",
+      gri.product_display_name as "productDisplayName",
+      gri.product_sku as "productSku",
+      gri.stock_unit as "stockUnit",
+      gri.purchase_unit as "purchaseUnit",
+      gri.purchase_unit_factor as "purchaseUnitFactor",
+      gri.qty_received_purchase as "qtyReceivedPurchase",
+      gri.qty_received_stock as "qtyReceivedStock",
+      gri.unit_cost as "unitCost",
+      gri.line_total as "lineTotal",
+      gri.note as "note",
+      gri.created_at as "createdAt"
+    FROM goods_receipt_items gri
+    WHERE gri.goods_receipt_id = ${id}
+    ORDER BY gri.id ASC
+  `);
+
+  return {
+    goodsReceipt: mapGoodsReceiptRow(head),
+    items: (itemsRes.rows || itemsRes || []).map(mapGoodsReceiptItemRow),
+  };
+}
+
 async function createGoodsReceipt({
   actorUser,
   locationId,
@@ -192,10 +338,41 @@ async function createGoodsReceipt({
   items,
 }) {
   return db.transaction(async (tx) => {
+    const safeLocationId = toInt(locationId, null);
+    const safePurchaseOrderId = toInt(purchaseOrderId, null);
+    const safeActorUserId = toInt(actorUser?.id, null);
+
+    if (!safeLocationId) {
+      const err = new Error("Valid branch is required");
+      err.code = "BAD_LOCATION";
+      throw err;
+    }
+
+    if (!safePurchaseOrderId) {
+      const err = new Error("Valid purchase order is required");
+      err.code = "NOT_FOUND";
+      throw err;
+    }
+
+    if (!safeActorUserId) {
+      const err = new Error("Valid receiving user is required");
+      err.code = "BAD_USER";
+      throw err;
+    }
+
+    const location = await getLocationOrThrow(tx, safeLocationId);
+    if (String(location.status || "").toUpperCase() !== "ACTIVE") {
+      const err = new Error("Goods can only be received into an active branch");
+      err.code = "BAD_LOCATION";
+      throw err;
+    }
+
     const purchaseOrder = await getPurchaseOrderOrThrow(tx, {
-      purchaseOrderId,
-      locationId,
+      purchaseOrderId: safePurchaseOrderId,
+      locationId: safeLocationId,
     });
+
+    await getSupplierOrThrow(tx, purchaseOrder.supplierId);
 
     const currentStatus = normalizePOStatus(purchaseOrder.status);
     if (!["APPROVED", "PARTIALLY_RECEIVED"].includes(currentStatus)) {
@@ -206,23 +383,58 @@ async function createGoodsReceipt({
       throw err;
     }
 
-    const poItems = await getPurchaseOrderItems(tx, purchaseOrderId);
+    const poItems = await getPurchaseOrderItems(tx, safePurchaseOrderId);
     if (!poItems.length) {
       const err = new Error("Purchase order has no items");
       err.code = "BAD_ITEMS";
       throw err;
     }
 
+    const rawItems = Array.isArray(items) ? items : [];
+    if (!rawItems.length) {
+      const err = new Error("At least one receipt line is required");
+      err.code = "BAD_ITEMS";
+      throw err;
+    }
+
     const poItemsMap = new Map(poItems.map((row) => [Number(row.id), row]));
+    const seenPOItemIds = new Set();
 
     const receiptLines = [];
     let totalLines = 0;
     let totalUnitsReceived = 0;
     let totalAmount = 0;
 
-    for (const raw of items || []) {
-      const purchaseOrderItemId = Number(raw.purchaseOrderItemId);
-      const qtyReceivedPurchase = Math.max(1, toInt(raw.qtyReceived, 0) || 0);
+    for (const raw of rawItems) {
+      const purchaseOrderItemId = toInt(raw?.purchaseOrderItemId, null);
+      const qtyReceivedPurchase = Math.max(0, toInt(raw?.qtyReceived, 0) || 0);
+
+      if (!purchaseOrderItemId) {
+        const err = new Error(
+          "Each receipt line must include purchaseOrderItemId",
+        );
+        err.code = "BAD_ITEMS";
+        throw err;
+      }
+
+      if (seenPOItemIds.has(purchaseOrderItemId)) {
+        const err = new Error(
+          `Purchase order item ${purchaseOrderItemId} appears more than once`,
+        );
+        err.code = "BAD_ITEMS";
+        err.debug = { purchaseOrderItemId };
+        throw err;
+      }
+      seenPOItemIds.add(purchaseOrderItemId);
+
+      if (qtyReceivedPurchase <= 0) {
+        const err = new Error(
+          `Receipt quantity must be greater than zero for PO item ${purchaseOrderItemId}`,
+        );
+        err.code = "BAD_ITEMS";
+        err.debug = { purchaseOrderItemId, qtyReceived: raw?.qtyReceived };
+        throw err;
+      }
 
       const poItem = poItemsMap.get(purchaseOrderItemId);
       if (!poItem) {
@@ -297,7 +509,7 @@ async function createGoodsReceipt({
         qtyReceivedStock,
         unitCost,
         lineTotal,
-        note: cleanText(raw.note, 300),
+        note: cleanText(raw?.note, 300),
       });
 
       totalLines += 1;
@@ -305,22 +517,24 @@ async function createGoodsReceipt({
       totalAmount += lineTotal;
     }
 
+    const now = new Date();
+
     const [createdReceipt] = await tx
       .insert(goodsReceipts)
       .values({
-        locationId: Number(locationId),
-        purchaseOrderId: Number(purchaseOrderId),
+        locationId: safeLocationId,
+        purchaseOrderId: safePurchaseOrderId,
         supplierId: Number(purchaseOrder.supplierId),
         receiptNo: cleanText(receiptNo, 120),
         reference: cleanText(reference, 120),
         note: cleanText(note, 4000),
-        receivedByUserId: Number(actorUser.id),
-        receivedAt: parseDateOrNull(receivedAt) || new Date(),
+        receivedByUserId: safeActorUserId,
+        receivedAt: parseDateOrNull(receivedAt) || now,
         totalLines,
         totalUnitsReceived,
         totalAmount,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        createdAt: now,
+        updatedAt: now,
       })
       .returning();
 
@@ -340,7 +554,7 @@ async function createGoodsReceipt({
         unitCost: line.unitCost,
         lineTotal: line.lineTotal,
         note: line.note,
-        createdAt: new Date(),
+        createdAt: now,
       });
 
       await tx.execute(sql`
@@ -351,7 +565,7 @@ async function createGoodsReceipt({
       `);
 
       await createInventoryBalanceIfMissing(tx, {
-        locationId: Number(locationId),
+        locationId: safeLocationId,
         productId: Number(line.productId),
       });
 
@@ -360,54 +574,100 @@ async function createGoodsReceipt({
         SET
           qty_on_hand = qty_on_hand + ${line.qtyReceivedStock},
           updated_at = now()
-        WHERE location_id = ${Number(locationId)}
+        WHERE location_id = ${safeLocationId}
           AND product_id = ${Number(line.productId)}
       `);
     }
 
     const poSummary = await recalcAndUpdatePurchaseOrderStatus(
       tx,
-      Number(purchaseOrderId),
+      safePurchaseOrderId,
     );
 
     await safeLogAudit({
-      locationId: Number(locationId),
-      userId: Number(actorUser.id),
+      locationId: safeLocationId,
+      userId: safeActorUserId,
       action: "GOODS_RECEIPT_CREATE",
       entity: "goods_receipt",
       entityId: Number(createdReceipt.id),
-      description: `Created goods receipt #${createdReceipt.id} for purchase order #${purchaseOrderId}`,
+      description: `Created goods receipt #${createdReceipt.id} for purchase order #${safePurchaseOrderId}`,
       meta: {
         goodsReceiptId: Number(createdReceipt.id),
-        purchaseOrderId: Number(purchaseOrderId),
+        purchaseOrderId: safePurchaseOrderId,
         totalLines,
         totalUnitsReceived,
         totalAmount,
         purchaseOrderStatus: poSummary.nextStatus,
       },
+      tx,
     });
 
     await safeLogAudit({
-      locationId: Number(locationId),
-      userId: Number(actorUser.id),
+      locationId: safeLocationId,
+      userId: safeActorUserId,
       action: "PURCHASE_ORDER_RECEIVE",
       entity: "purchase_order",
-      entityId: Number(purchaseOrderId),
-      description: `Received goods against purchase order #${purchaseOrderId}`,
+      entityId: safePurchaseOrderId,
+      description: `Received goods against purchase order #${safePurchaseOrderId}`,
       meta: {
         goodsReceiptId: Number(createdReceipt.id),
-        purchaseOrderId: Number(purchaseOrderId),
+        purchaseOrderId: safePurchaseOrderId,
         totalLines,
         totalUnitsReceived,
         totalAmount,
         nextStatus: poSummary.nextStatus,
       },
+      tx,
     });
 
-    return getGoodsReceiptById({
+    const out = await getGoodsReceiptByIdWithExecutor(tx, {
       goodsReceiptId: Number(createdReceipt.id),
       locationId: null,
     });
+
+    if (!out) {
+      return {
+        goodsReceipt: {
+          id: Number(createdReceipt.id),
+          locationId: safeLocationId,
+          purchaseOrderId: safePurchaseOrderId,
+          supplierId: Number(purchaseOrder.supplierId),
+          supplierName: null,
+          receiptNo: createdReceipt.receiptNo ?? null,
+          reference: createdReceipt.reference ?? null,
+          note: createdReceipt.note ?? null,
+          receivedByUserId: safeActorUserId,
+          receivedByName: null,
+          receivedByEmail: null,
+          receivedAt: createdReceipt.receivedAt,
+          totalLines,
+          totalUnitsReceived,
+          totalAmount,
+          createdAt: createdReceipt.createdAt,
+          updatedAt: createdReceipt.updatedAt,
+        },
+        items: receiptLines.map((line, index) => ({
+          id: index + 1,
+          goodsReceiptId: Number(createdReceipt.id),
+          purchaseOrderItemId: Number(line.purchaseOrderItemId),
+          productId: Number(line.productId),
+          productName: line.productName,
+          productDisplayName: line.productDisplayName,
+          productSku: line.productSku,
+          stockUnit: line.stockUnit,
+          purchaseUnit: line.purchaseUnit,
+          purchaseUnitFactor: line.purchaseUnitFactor,
+          qtyReceivedPurchase: line.qtyReceivedPurchase,
+          qtyReceivedStock: line.qtyReceivedStock,
+          unitCost: line.unitCost,
+          lineTotal: line.lineTotal,
+          note: line.note,
+          createdAt: now,
+        })),
+      };
+    }
+
+    return out;
   });
 }
 
@@ -514,98 +774,7 @@ async function listGoodsReceipts({
 }
 
 async function getGoodsReceiptById({ goodsReceiptId, locationId = null }) {
-  const id = toInt(goodsReceiptId, null);
-  if (!id) return null;
-
-  let where = sql`gr.id = ${id}`;
-  if (locationId != null) {
-    where = sql`${where} AND gr.location_id = ${Number(locationId)}`;
-  }
-
-  const headRes = await db.execute(sql`
-    SELECT
-      gr.id,
-      gr.location_id as "locationId",
-      l.name as "locationName",
-      l.code as "locationCode",
-
-      gr.purchase_order_id as "purchaseOrderId",
-
-      gr.supplier_id as "supplierId",
-      s.name as "supplierName",
-
-      gr.receipt_no as "receiptNo",
-      gr.reference as "reference",
-      gr.note as "note",
-
-      gr.received_by_user_id as "receivedByUserId",
-      u.name as "receivedByName",
-      u.email as "receivedByEmail",
-
-      gr.received_at as "receivedAt",
-      gr.total_lines as "totalLines",
-      gr.total_units_received as "totalUnitsReceived",
-      gr.total_amount as "totalAmount",
-      gr.created_at as "createdAt",
-      gr.updated_at as "updatedAt"
-    FROM goods_receipts gr
-    JOIN locations l
-      ON l.id = gr.location_id
-    JOIN suppliers s
-      ON s.id = gr.supplier_id
-    LEFT JOIN users u
-      ON u.id = gr.received_by_user_id
-    WHERE ${where}
-    LIMIT 1
-  `);
-
-  const head = (headRes.rows || headRes || [])[0];
-  if (!head) return null;
-
-  const itemsRes = await db.execute(sql`
-    SELECT
-      gri.id,
-      gri.goods_receipt_id as "goodsReceiptId",
-      gri.purchase_order_item_id as "purchaseOrderItemId",
-      gri.product_id as "productId",
-      gri.product_name as "productName",
-      gri.product_display_name as "productDisplayName",
-      gri.product_sku as "productSku",
-      gri.stock_unit as "stockUnit",
-      gri.purchase_unit as "purchaseUnit",
-      gri.purchase_unit_factor as "purchaseUnitFactor",
-      gri.qty_received_purchase as "qtyReceivedPurchase",
-      gri.qty_received_stock as "qtyReceivedStock",
-      gri.unit_cost as "unitCost",
-      gri.line_total as "lineTotal",
-      gri.note as "note",
-      gri.created_at as "createdAt"
-    FROM goods_receipt_items gri
-    WHERE gri.goods_receipt_id = ${id}
-    ORDER BY gri.id ASC
-  `);
-
-  return {
-    goodsReceipt: mapGoodsReceiptRow(head),
-    items: (itemsRes.rows || itemsRes || []).map((row) => ({
-      id: Number(row.id),
-      goodsReceiptId: Number(row.goodsReceiptId),
-      purchaseOrderItemId: Number(row.purchaseOrderItemId),
-      productId: Number(row.productId),
-      productName: row.productName ?? null,
-      productDisplayName: row.productDisplayName ?? null,
-      productSku: row.productSku ?? null,
-      stockUnit: row.stockUnit ?? "PIECE",
-      purchaseUnit: row.purchaseUnit ?? "PIECE",
-      purchaseUnitFactor: Number(row.purchaseUnitFactor || 1),
-      qtyReceivedPurchase: Number(row.qtyReceivedPurchase || 0),
-      qtyReceivedStock: Number(row.qtyReceivedStock || 0),
-      unitCost: Number(row.unitCost || 0),
-      lineTotal: Number(row.lineTotal || 0),
-      note: row.note ?? null,
-      createdAt: row.createdAt,
-    })),
-  };
+  return getGoodsReceiptByIdWithExecutor(db, { goodsReceiptId, locationId });
 }
 
 module.exports = {

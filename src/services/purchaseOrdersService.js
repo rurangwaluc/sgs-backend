@@ -9,7 +9,6 @@ const {
 } = require("../db/schema/purchase_order_items.schema");
 const { locations } = require("../db/schema/locations.schema");
 const { suppliers } = require("../db/schema/suppliers.schema");
-const { users } = require("../db/schema/users.schema");
 const { products } = require("../db/schema/products.schema");
 
 const { safeLogAudit } = require("./auditService");
@@ -285,6 +284,123 @@ async function getPurchaseOrderRowOrThrow(tx, purchaseOrderId) {
   return row;
 }
 
+async function getPurchaseOrderByIdUsing(
+  executor,
+  { purchaseOrderId, locationId = null },
+) {
+  const id = toInt(purchaseOrderId, null);
+  if (!id) return null;
+
+  let where = sql`po.id = ${id}`;
+  if (locationId != null) {
+    where = sql`${where} AND po.location_id = ${Number(locationId)}`;
+  }
+
+  const headRes = await executor.execute(sql`
+    SELECT
+      po.id,
+      po.location_id as "locationId",
+      l.name as "locationName",
+      l.code as "locationCode",
+
+      po.supplier_id as "supplierId",
+      s.name as "supplierName",
+
+      po.po_no as "poNo",
+      po.reference as "reference",
+      po.currency as "currency",
+      po.status as "status",
+      po.notes as "notes",
+
+      po.ordered_at as "orderedAt",
+      po.expected_at as "expectedAt",
+      po.approved_at as "approvedAt",
+
+      po.created_by_user_id as "createdByUserId",
+      cu.name as "createdByName",
+      cu.email as "createdByEmail",
+
+      po.approved_by_user_id as "approvedByUserId",
+      au.name as "approvedByName",
+
+      po.subtotal_amount as "subtotalAmount",
+      po.total_amount as "totalAmount",
+
+      po.created_at as "createdAt",
+      po.updated_at as "updatedAt"
+    FROM purchase_orders po
+    JOIN locations l
+      ON l.id = po.location_id
+    JOIN suppliers s
+      ON s.id = po.supplier_id
+    LEFT JOIN users cu
+      ON cu.id = po.created_by_user_id
+    LEFT JOIN users au
+      ON au.id = po.approved_by_user_id
+    WHERE ${where}
+    LIMIT 1
+  `);
+
+  const head = (headRes.rows || headRes || [])[0];
+  if (!head) return null;
+
+  const itemsRes = await executor.execute(sql`
+    SELECT
+      poi.id,
+      poi.purchase_order_id as "purchaseOrderId",
+      poi.product_id as "productId",
+      poi.product_name as "productName",
+      poi.product_display_name as "productDisplayName",
+      poi.product_sku as "productSku",
+      poi.stock_unit as "stockUnit",
+      poi.purchase_unit as "purchaseUnit",
+      poi.purchase_unit_factor as "purchaseUnitFactor",
+      poi.qty_ordered as "qtyOrdered",
+      poi.qty_received as "qtyReceived",
+      poi.unit_cost as "unitCost",
+      poi.line_total as "lineTotal",
+      poi.note as "note",
+      poi.created_at as "createdAt"
+    FROM purchase_order_items poi
+    WHERE poi.purchase_order_id = ${id}
+    ORDER BY poi.id ASC
+  `);
+
+  const itemRows = itemsRes.rows || itemsRes || [];
+
+  return {
+    purchaseOrder: mapPurchaseOrderRow({
+      ...head,
+      itemsCount: itemRows.length,
+      qtyOrderedTotal: itemRows.reduce(
+        (sum, row) => sum + Number(row.qtyOrdered || 0),
+        0,
+      ),
+      qtyReceivedTotal: itemRows.reduce(
+        (sum, row) => sum + Number(row.qtyReceived || 0),
+        0,
+      ),
+    }),
+    items: itemRows.map((row) => ({
+      id: Number(row.id),
+      purchaseOrderId: Number(row.purchaseOrderId),
+      productId: row.productId == null ? null : Number(row.productId),
+      productName: row.productName ?? null,
+      productDisplayName: row.productDisplayName ?? null,
+      productSku: row.productSku ?? null,
+      stockUnit: row.stockUnit ?? "PIECE",
+      purchaseUnit: row.purchaseUnit ?? "PIECE",
+      purchaseUnitFactor: Number(row.purchaseUnitFactor || 1),
+      qtyOrdered: Number(row.qtyOrdered || 0),
+      qtyReceived: Number(row.qtyReceived || 0),
+      unitCost: Number(row.unitCost || 0),
+      lineTotal: Number(row.lineTotal || 0),
+      note: row.note ?? null,
+      createdAt: row.createdAt,
+    })),
+  };
+}
+
 async function createPurchaseOrder({
   actorUser,
   locationId,
@@ -408,7 +524,7 @@ async function createPurchaseOrder({
       },
     });
 
-    return getPurchaseOrderById({
+    return getPurchaseOrderByIdUsing(tx, {
       purchaseOrderId: Number(created.id),
       locationId: null,
     });
@@ -568,7 +684,7 @@ async function updatePurchaseOrder({
       },
     });
 
-    return getPurchaseOrderById({
+    return getPurchaseOrderByIdUsing(tx, {
       purchaseOrderId: Number(purchaseOrderId),
       locationId: null,
     });
@@ -608,7 +724,7 @@ async function approvePurchaseOrder({ actorUser, purchaseOrderId }) {
       },
     });
 
-    return getPurchaseOrderById({
+    return getPurchaseOrderByIdUsing(tx, {
       purchaseOrderId: Number(purchaseOrderId),
       locationId: null,
     });
@@ -670,7 +786,7 @@ async function cancelPurchaseOrder({ actorUser, purchaseOrderId, reason }) {
       },
     });
 
-    return getPurchaseOrderById({
+    return getPurchaseOrderByIdUsing(tx, {
       purchaseOrderId: Number(purchaseOrderId),
       locationId: null,
     });
@@ -807,117 +923,7 @@ async function listPurchaseOrders({
 }
 
 async function getPurchaseOrderById({ purchaseOrderId, locationId = null }) {
-  const id = toInt(purchaseOrderId, null);
-  if (!id) return null;
-
-  let where = sql`po.id = ${id}`;
-  if (locationId != null) {
-    where = sql`${where} AND po.location_id = ${Number(locationId)}`;
-  }
-
-  const headRes = await db.execute(sql`
-    SELECT
-      po.id,
-      po.location_id as "locationId",
-      l.name as "locationName",
-      l.code as "locationCode",
-
-      po.supplier_id as "supplierId",
-      s.name as "supplierName",
-
-      po.po_no as "poNo",
-      po.reference as "reference",
-      po.currency as "currency",
-      po.status as "status",
-      po.notes as "notes",
-
-      po.ordered_at as "orderedAt",
-      po.expected_at as "expectedAt",
-      po.approved_at as "approvedAt",
-
-      po.created_by_user_id as "createdByUserId",
-      cu.name as "createdByName",
-      cu.email as "createdByEmail",
-
-      po.approved_by_user_id as "approvedByUserId",
-      au.name as "approvedByName",
-
-      po.subtotal_amount as "subtotalAmount",
-      po.total_amount as "totalAmount",
-
-      po.created_at as "createdAt",
-      po.updated_at as "updatedAt"
-    FROM purchase_orders po
-    JOIN locations l
-      ON l.id = po.location_id
-    JOIN suppliers s
-      ON s.id = po.supplier_id
-    LEFT JOIN users cu
-      ON cu.id = po.created_by_user_id
-    LEFT JOIN users au
-      ON au.id = po.approved_by_user_id
-    WHERE ${where}
-    LIMIT 1
-  `);
-
-  const head = (headRes.rows || headRes || [])[0];
-  if (!head) return null;
-
-  const itemsRes = await db.execute(sql`
-    SELECT
-      poi.id,
-      poi.purchase_order_id as "purchaseOrderId",
-      poi.product_id as "productId",
-      poi.product_name as "productName",
-      poi.product_display_name as "productDisplayName",
-      poi.product_sku as "productSku",
-      poi.stock_unit as "stockUnit",
-      poi.purchase_unit as "purchaseUnit",
-      poi.purchase_unit_factor as "purchaseUnitFactor",
-      poi.qty_ordered as "qtyOrdered",
-      poi.qty_received as "qtyReceived",
-      poi.unit_cost as "unitCost",
-      poi.line_total as "lineTotal",
-      poi.note as "note",
-      poi.created_at as "createdAt"
-    FROM purchase_order_items poi
-    WHERE poi.purchase_order_id = ${id}
-    ORDER BY poi.id ASC
-  `);
-
-  const itemRows = itemsRes.rows || itemsRes || [];
-
-  return {
-    purchaseOrder: mapPurchaseOrderRow({
-      ...head,
-      itemsCount: itemRows.length,
-      qtyOrderedTotal: itemRows.reduce(
-        (sum, row) => sum + Number(row.qtyOrdered || 0),
-        0,
-      ),
-      qtyReceivedTotal: itemRows.reduce(
-        (sum, row) => sum + Number(row.qtyReceived || 0),
-        0,
-      ),
-    }),
-    items: itemRows.map((row) => ({
-      id: Number(row.id),
-      purchaseOrderId: Number(row.purchaseOrderId),
-      productId: row.productId == null ? null : Number(row.productId),
-      productName: row.productName ?? null,
-      productDisplayName: row.productDisplayName ?? null,
-      productSku: row.productSku ?? null,
-      stockUnit: row.stockUnit ?? "PIECE",
-      purchaseUnit: row.purchaseUnit ?? "PIECE",
-      purchaseUnitFactor: Number(row.purchaseUnitFactor || 1),
-      qtyOrdered: Number(row.qtyOrdered || 0),
-      qtyReceived: Number(row.qtyReceived || 0),
-      unitCost: Number(row.unitCost || 0),
-      lineTotal: Number(row.lineTotal || 0),
-      note: row.note ?? null,
-      createdAt: row.createdAt,
-    })),
-  };
+  return getPurchaseOrderByIdUsing(db, { purchaseOrderId, locationId });
 }
 
 module.exports = {

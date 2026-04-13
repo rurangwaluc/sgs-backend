@@ -1,3 +1,5 @@
+"use strict";
+
 const path = require("path");
 const fastify = require("fastify");
 const rateLimit = require("@fastify/rate-limit");
@@ -34,7 +36,7 @@ const {
 } = require("./routes/ownerSuppliersWrite.routes");
 
 const { goodsReceiptsRoutes } = require("./routes/goodsReceipts.routes");
-const { purchaseOrdersRoutes } = require("./routes/purchaseorders.routes");
+const { purchaseOrdersRoutes } = require("./routes/purchaseOrders.routes");
 
 const { proformasRoutes } = require("./routes/proformas.routes");
 const { deliveryNotesRoutes } = require("./routes/deliveryNotes.routes");
@@ -228,6 +230,14 @@ function buildApp() {
   }
 
   app.register(adminCoverageRoutes);
+
+  // Helpful runtime verification during debugging.
+  // Remove later if you do not want route output in console.
+  try {
+    console.log(app.printRoutes());
+  } catch (err) {
+    app.log.error({ err }, "Failed to print Fastify routes");
+  }
 
   app.setErrorHandler((error, request, reply) => {
     request.log.error(error);

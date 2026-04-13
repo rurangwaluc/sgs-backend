@@ -65,7 +65,7 @@ const ACTIONS = {
   PRODUCT_DELETE: "PRODUCT_DELETE",
   PRODUCT_PRICING_UPDATE: "PRODUCT_PRICING_UPDATE",
 
-  // ✅ Owner cross-branch products
+  // Owner cross-branch products
   OWNER_PRODUCTS_SUMMARY_VIEW: "OWNER_PRODUCTS_SUMMARY_VIEW",
   OWNER_PRODUCTS_VIEW: "OWNER_PRODUCTS_VIEW",
   OWNER_PRODUCT_BRANCHES_VIEW: "OWNER_PRODUCT_BRANCHES_VIEW",
@@ -92,7 +92,7 @@ const ACTIONS = {
   INVENTORY_ADJUST: "INVENTORY_ADJUST",
   INVENTORY_MANAGE: "INVENTORY_MANAGE",
 
-  // ✅ Owner cross-branch inventory
+  // Owner cross-branch inventory
   OWNER_INVENTORY_SUMMARY_VIEW: "OWNER_INVENTORY_SUMMARY_VIEW",
   OWNER_INVENTORY_VIEW: "OWNER_INVENTORY_VIEW",
   OWNER_PRODUCT_INVENTORY_VIEW: "OWNER_PRODUCT_INVENTORY_VIEW",
@@ -102,6 +102,12 @@ const ACTIONS = {
   // =====================
   INVENTORY_ARRIVAL_CREATE: "INVENTORY_ARRIVAL_CREATE",
   INVENTORY_ARRIVAL_VIEW: "INVENTORY_ARRIVAL_VIEW",
+
+  // =====================
+  // Goods receipts
+  // =====================
+  GOODS_RECEIPT_CREATE: "GOODS_RECEIPT_CREATE",
+  GOODS_RECEIPT_VIEW: "GOODS_RECEIPT_VIEW",
 
   // =====================
   // Inventory adjustment requests
@@ -126,7 +132,7 @@ const ACTIONS = {
   STOCK_RELEASE_CONFIRM: "STOCK_RELEASE_CONFIRM",
   STOCK_RETURN_CONFIRM: "STOCK_RETURN_CONFIRM",
 
-  // Used by /requests/:id/release route (and policy)
+  // Used by /requests/:id/release route
   STOCK_RELEASE_TO_SELLER: "STOCK_RELEASE_TO_SELLER",
 
   // Legacy
@@ -158,7 +164,7 @@ const ACTIONS = {
   PAYMENT_RECORD: "PAYMENT_RECORD",
   PAYMENT_VIEW: "PAYMENT_VIEW",
 
-  // ✅ Owner money / owner payments
+  // Owner money / owner payments
   OWNER_PAYMENTS_VIEW: "OWNER_PAYMENTS_VIEW",
 
   CASH_SESSION_VIEW: "CASH_SESSION_VIEW",
@@ -242,7 +248,9 @@ const ACTIONS = {
  */
 ACTIONS.__ALIASES__ = {
   USER_MANAGE: ["USER_UPDATE", "USER_DELETE"],
+
   PRODUCT_PRICING_MANAGE: ["PRODUCT_PRICE_SET"],
+
   PRODUCT_EDIT: [
     "PRODUCT_UPDATE",
     "PRODUCT_PRICING_UPDATE",
@@ -261,6 +269,19 @@ ACTIONS.__ALIASES__ = {
   STOCK_REQUEST_RELEASE: ["STOCK_RELEASE_TO_SELLER", "STOCK_RELEASE_CONFIRM"],
 
   CREDIT_READ: ["CREDIT_VIEW"],
+
+  // Keep goods receipt routes backward-compatible with current inventory arrival
+  // permission setup while we transition to explicit procurement permissions.
+  GOODS_RECEIPT_CREATE: [
+    "INVENTORY_ARRIVAL_CREATE",
+    "INVENTORY_CREATE",
+    "PURCHASE_ORDER_VIEW",
+  ],
+  GOODS_RECEIPT_VIEW: [
+    "INVENTORY_ARRIVAL_VIEW",
+    "INVENTORY_VIEW",
+    "PURCHASE_ORDER_VIEW",
+  ],
 };
 
 module.exports = Object.freeze(ACTIONS);

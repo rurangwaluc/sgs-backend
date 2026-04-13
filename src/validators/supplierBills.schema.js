@@ -55,6 +55,10 @@ const supplierBillCreateSchema = z
   .object({
     supplierId: z.coerce.number().int().positive(),
     locationId: z.coerce.number().int().positive().optional(),
+
+    purchaseOrderId: z.coerce.number().int().positive().optional(),
+    goodsReceiptId: z.coerce.number().int().positive().optional(),
+
     billNo: optionalTrimmedString(80),
     currency: optionalTrimmedString(8),
     totalAmount: z.coerce.number().int().positive().optional(),
@@ -84,6 +88,14 @@ const supplierBillCreateSchema = z
       });
     }
 
+    if (data.goodsReceiptId && !data.purchaseOrderId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["purchaseOrderId"],
+        message: "purchaseOrderId is required when goodsReceiptId is provided",
+      });
+    }
+
     if (data.issuedDate && data.dueDate) {
       const issued = new Date(data.issuedDate);
       const due = new Date(data.dueDate);
@@ -101,6 +113,10 @@ const supplierBillUpdateSchema = z
   .object({
     supplierId: z.coerce.number().int().positive().optional(),
     locationId: z.coerce.number().int().positive().optional(),
+
+    purchaseOrderId: z.coerce.number().int().positive().optional(),
+    goodsReceiptId: z.coerce.number().int().positive().optional(),
+
     billNo: optionalTrimmedString(80),
     currency: optionalTrimmedString(8),
     totalAmount: z.coerce.number().int().positive().optional(),
@@ -132,6 +148,14 @@ const supplierBillUpdateSchema = z
         code: z.ZodIssueCode.custom,
         path: ["items"],
         message: "items cannot be empty",
+      });
+    }
+
+    if (data.goodsReceiptId && !data.purchaseOrderId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["purchaseOrderId"],
+        message: "purchaseOrderId is required when goodsReceiptId is provided",
       });
     }
 

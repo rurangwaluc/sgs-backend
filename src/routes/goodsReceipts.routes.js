@@ -10,31 +10,21 @@ const {
 } = require("../controllers/goodsReceiptsController");
 
 async function goodsReceiptsRoutes(app) {
-  const viewPermission =
-    ACTIONS.GOODS_RECEIPT_VIEW ||
-    ACTIONS.INVENTORY_ARRIVAL_VIEW ||
-    ACTIONS.INVENTORY_VIEW;
-
-  const createPermission =
-    ACTIONS.GOODS_RECEIPT_CREATE ||
-    ACTIONS.INVENTORY_ARRIVAL_CREATE ||
-    ACTIONS.INVENTORY_CREATE;
-
   app.get(
     "/goods-receipts",
-    { preHandler: [requirePermission(viewPermission)] },
+    { preHandler: [requirePermission(ACTIONS.GOODS_RECEIPT_VIEW)] },
     listGoodsReceipts,
   );
 
   app.get(
     "/goods-receipts/:id",
-    { preHandler: [requirePermission(viewPermission)] },
+    { preHandler: [requirePermission(ACTIONS.GOODS_RECEIPT_VIEW)] },
     getGoodsReceiptById,
   );
 
   app.post(
     "/goods-receipts",
-    { preHandler: [requirePermission(createPermission)] },
+    { preHandler: [requirePermission(ACTIONS.GOODS_RECEIPT_CREATE)] },
     createGoodsReceipt,
   );
 }
