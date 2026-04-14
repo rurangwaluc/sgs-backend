@@ -37,7 +37,7 @@ const {
 const { ownerLoansRoutes } = require("./routes/ownerLoans.routes");
 
 const { goodsReceiptsRoutes } = require("./routes/goodsReceipts.routes");
-const { purchaseOrdersRoutes } = require("./routes/purchaseorders.routes");
+const { purchaseOrdersRoutes } = require("./routes/purchaseOrders.routes");
 
 const { proformasRoutes } = require("./routes/proformas.routes");
 const { deliveryNotesRoutes } = require("./routes/deliveryNotes.routes");
