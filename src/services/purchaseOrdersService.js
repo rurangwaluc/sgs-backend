@@ -78,6 +78,12 @@ function buildProductDisplayName(product) {
     .trim();
 }
 
+function mapMaybeNumericId(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : value;
+}
+
 async function getLocationOrThrow(tx, locationId) {
   const rows = await tx
     .select({
@@ -228,13 +234,11 @@ function mapPurchaseOrderRow(row) {
     expectedAt: row.expectedAt,
     approvedAt: row.approvedAt,
 
-    createdByUserId:
-      row.createdByUserId == null ? null : Number(row.createdByUserId),
+    createdByUserId: mapMaybeNumericId(row.createdByUserId),
     createdByName: row.createdByName ?? null,
     createdByEmail: row.createdByEmail ?? null,
 
-    approvedByUserId:
-      row.approvedByUserId == null ? null : Number(row.approvedByUserId),
+    approvedByUserId: mapMaybeNumericId(row.approvedByUserId),
     approvedByName: row.approvedByName ?? null,
 
     subtotalAmount: Number(row.subtotalAmount || 0),
@@ -257,7 +261,6 @@ async function getPurchaseOrderRowOrThrow(tx, purchaseOrderId) {
       po.supplier_id as "supplierId",
       po.po_no as "poNo",
       po.reference as "reference",
-      po.currency as "currency",
       po.status as "status",
       po.notes as "notes",
       po.ordered_at as "orderedAt",
@@ -291,9 +294,9 @@ async function getPurchaseOrderByIdUsing(
   const id = toInt(purchaseOrderId, null);
   if (!id) return null;
 
-  let where = sql`po.id = ${id}`;
+  let whereSql = sql`po.id = ${id}`;
   if (locationId != null) {
-    where = sql`${where} AND po.location_id = ${Number(locationId)}`;
+    whereSql = sql`${whereSql} AND po.location_id = ${Number(locationId)}`;
   }
 
   const headRes = await executor.execute(sql`
@@ -302,13 +305,23 @@ async function getPurchaseOrderByIdUsing(
       po.location_id as "locationId",
       l.name as "locationName",
       l.code as "locationCode",
+      l.email as "locationEmail",
+      l.phone as "locationPhone",
+      l.website as "locationWebsite",
+      l.address as "locationAddress",
+      l.logo_url as "locationLogoUrl",
+      l.tin as "locationTin",
 
       po.supplier_id as "supplierId",
       s.name as "supplierName",
+      s.contact_name as "supplierContactName",
+      s.phone as "supplierPhone",
+      s.email as "supplierEmail",
+      s.address as "supplierAddress",
 
       po.po_no as "poNo",
       po.reference as "reference",
-      po.currency as "currency",
+      COALESCE(s.default_currency, 'RWF') as "currency",
       po.status as "status",
       po.notes as "notes",
 
@@ -317,27 +330,43 @@ async function getPurchaseOrderByIdUsing(
       po.approved_at as "approvedAt",
 
       po.created_by_user_id as "createdByUserId",
-      cu.name as "createdByName",
-      cu.email as "createdByEmail",
+      NULL::text as "createdByName",
+      NULL::text as "createdByEmail",
 
       po.approved_by_user_id as "approvedByUserId",
-      au.name as "approvedByName",
+      NULL::text as "approvedByName",
+      NULL::text as "approvedByEmail",
 
       po.subtotal_amount as "subtotalAmount",
       po.total_amount as "totalAmount",
 
       po.created_at as "createdAt",
-      po.updated_at as "updatedAt"
+      po.updated_at as "updatedAt",
+
+      COALESCE((
+        SELECT COUNT(*)::int
+        FROM purchase_order_items poi
+        WHERE poi.purchase_order_id = po.id
+      ), 0) as "itemsCount",
+
+      COALESCE((
+        SELECT SUM(poi.qty_ordered)::int
+        FROM purchase_order_items poi
+        WHERE poi.purchase_order_id = po.id
+      ), 0) as "qtyOrderedTotal",
+
+      COALESCE((
+        SELECT SUM(poi.qty_received)::int
+        FROM purchase_order_items poi
+        WHERE poi.purchase_order_id = po.id
+      ), 0) as "qtyReceivedTotal"
+
     FROM purchase_orders po
     JOIN locations l
       ON l.id = po.location_id
     JOIN suppliers s
       ON s.id = po.supplier_id
-    LEFT JOIN users cu
-      ON cu.id = po.created_by_user_id
-    LEFT JOIN users au
-      ON au.id = po.approved_by_user_id
-    WHERE ${where}
+    WHERE ${whereSql}
     LIMIT 1
   `);
 
@@ -575,9 +604,7 @@ async function updatePurchaseOrder({
           ? cleanText(reference, 120)
           : existing.reference,
       currency:
-        currency !== undefined
-          ? normalizeCurrency(currency, existing.currency || "RWF")
-          : existing.currency,
+        currency !== undefined ? normalizeCurrency(currency, "RWF") : "RWF",
       notes: notes !== undefined ? cleanText(notes, 4000) : existing.notes,
       orderedAt:
         orderedAt !== undefined
@@ -842,12 +869,10 @@ async function listPurchaseOrders({
       OR COALESCE(po.po_no, '') ILIKE ${like}
       OR COALESCE(po.reference, '') ILIKE ${like}
       OR COALESCE(po.notes, '') ILIKE ${like}
-      OR COALESCE(po.currency, '') ILIKE ${like}
       OR COALESCE(s.name, '') ILIKE ${like}
+      OR COALESCE(s.default_currency, '') ILIKE ${like}
       OR COALESCE(l.name, '') ILIKE ${like}
       OR COALESCE(l.code, '') ILIKE ${like}
-      OR COALESCE(cu.name, '') ILIKE ${like}
-      OR COALESCE(cu.email, '') ILIKE ${like}
     )`;
   }
 
@@ -863,7 +888,7 @@ async function listPurchaseOrders({
 
       po.po_no as "poNo",
       po.reference as "reference",
-      po.currency as "currency",
+      COALESCE(s.default_currency, 'RWF') as "currency",
       po.status as "status",
       po.notes as "notes",
 
@@ -872,11 +897,11 @@ async function listPurchaseOrders({
       po.approved_at as "approvedAt",
 
       po.created_by_user_id as "createdByUserId",
-      cu.name as "createdByName",
-      cu.email as "createdByEmail",
+      NULL::text as "createdByName",
+      NULL::text as "createdByEmail",
 
       po.approved_by_user_id as "approvedByUserId",
-      au.name as "approvedByName",
+      NULL::text as "approvedByName",
 
       po.subtotal_amount as "subtotalAmount",
       po.total_amount as "totalAmount",
@@ -907,10 +932,6 @@ async function listPurchaseOrders({
       ON l.id = po.location_id
     JOIN suppliers s
       ON s.id = po.supplier_id
-    LEFT JOIN users cu
-      ON cu.id = po.created_by_user_id
-    LEFT JOIN users au
-      ON au.id = po.approved_by_user_id
     WHERE ${where}
     ORDER BY po.id DESC
     LIMIT ${lim}
