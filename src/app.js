@@ -34,6 +34,7 @@ const {
 const {
   ownerSuppliersWriteRoutes,
 } = require("./routes/ownerSuppliersWrite.routes");
+const { ownerLoansRoutes } = require("./routes/ownerLoans.routes");
 
 const { goodsReceiptsRoutes } = require("./routes/goodsReceipts.routes");
 const { purchaseOrdersRoutes } = require("./routes/purchaseOrders.routes");
@@ -98,6 +99,9 @@ const supplierEvaluationsRoutes =
   supplierEvaluationsRoutesModule;
 
 const { adminCoverageRoutes } = require("./routes/adminCoverage.routes");
+const {
+  purchaseOrdersPdfRoutes,
+} = require("./routes/purchaseOrdersPdf.routes");
 
 function buildApp() {
   const app = fastify({ logger: true });
@@ -166,9 +170,11 @@ function buildApp() {
   app.register(ownerSupplierBillsRoutes);
   app.register(ownerSupplierBillsWriteRoutes);
   app.register(ownerSuppliersWriteRoutes);
+  app.register(ownerLoansRoutes);
 
   app.register(goodsReceiptsRoutes);
   app.register(purchaseOrdersRoutes);
+  app.register(purchaseOrdersPdfRoutes);
 
   app.register(proformasRoutes);
   app.register(deliveryNotesRoutes);
@@ -231,8 +237,6 @@ function buildApp() {
 
   app.register(adminCoverageRoutes);
 
-  // Helpful runtime verification during debugging.
-  // Remove later if you do not want route output in console.
   try {
     console.log(app.printRoutes());
   } catch (err) {
