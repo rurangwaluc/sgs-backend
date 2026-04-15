@@ -21,6 +21,13 @@ function cleanStr(v) {
   return s || "";
 }
 
+function resolveScopedLocationId(request) {
+  const queryLocationId = toInt(request.query?.locationId, null);
+  const userLocationId = toInt(request.user?.locationId, null);
+
+  return queryLocationId || userLocationId || null;
+}
+
 function sendServiceError(request, reply, error, logMessage) {
   request.log.error({ err: error }, logMessage);
 
@@ -33,7 +40,7 @@ function sendServiceError(request, reply, error, logMessage) {
 async function listOwnerLoansHandler(request, reply) {
   try {
     const loans = await listOwnerLoans({
-      locationId: toInt(request.user?.locationId, null),
+      locationId: resolveScopedLocationId(request),
       q: cleanStr(request.query?.q),
       customerId: toInt(request.query?.customerId, null),
       receiverType: cleanStr(request.query?.receiverType),
@@ -191,7 +198,7 @@ async function voidOwnerLoanHandler(request, reply) {
 async function ownerLoanSummaryHandler(request, reply) {
   try {
     const summary = await ownerLoanSummary({
-      locationId: toInt(request.user?.locationId, null),
+      locationId: resolveScopedLocationId(request),
       status: cleanStr(request.query?.status),
       receiverType: cleanStr(request.query?.receiverType),
     });

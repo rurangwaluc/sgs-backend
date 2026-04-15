@@ -17,11 +17,7 @@ function ownerLoansRoutes(app, _opts, done) {
   app.get(
     "/owner-loans/summary",
     {
-      preHandler: [
-        requirePermission(
-          ACTIONS.OWNER_LOAN_VIEW || ACTIONS.PAYMENT_VIEW || ACTIONS.CASH_VIEW,
-        ),
-      ],
+      preHandler: [requirePermission(ACTIONS.OWNER_LOAN_SUMMARY_VIEW)],
     },
     ownerLoanSummary,
   );
@@ -29,11 +25,7 @@ function ownerLoansRoutes(app, _opts, done) {
   app.get(
     "/owner-loans",
     {
-      preHandler: [
-        requirePermission(
-          ACTIONS.OWNER_LOAN_VIEW || ACTIONS.PAYMENT_VIEW || ACTIONS.CASH_VIEW,
-        ),
-      ],
+      preHandler: [requirePermission(ACTIONS.OWNER_LOAN_VIEW)],
     },
     listOwnerLoans,
   );
@@ -41,11 +33,7 @@ function ownerLoansRoutes(app, _opts, done) {
   app.get(
     "/owner-loans/:id",
     {
-      preHandler: [
-        requirePermission(
-          ACTIONS.OWNER_LOAN_VIEW || ACTIONS.PAYMENT_VIEW || ACTIONS.CASH_VIEW,
-        ),
-      ],
+      preHandler: [requirePermission(ACTIONS.OWNER_LOAN_VIEW)],
     },
     getOwnerLoan,
   );
@@ -53,13 +41,7 @@ function ownerLoansRoutes(app, _opts, done) {
   app.post(
     "/owner-loans",
     {
-      preHandler: [
-        requirePermission(
-          ACTIONS.OWNER_LOAN_CREATE ||
-            ACTIONS.PAYMENT_CREATE ||
-            ACTIONS.CASH_CREATE,
-        ),
-      ],
+      preHandler: [requirePermission(ACTIONS.OWNER_LOAN_CREATE)],
     },
     createOwnerLoan,
   );
@@ -67,13 +49,7 @@ function ownerLoansRoutes(app, _opts, done) {
   app.patch(
     "/owner-loans/:id",
     {
-      preHandler: [
-        requirePermission(
-          ACTIONS.OWNER_LOAN_UPDATE ||
-            ACTIONS.PAYMENT_UPDATE ||
-            ACTIONS.CASH_UPDATE,
-        ),
-      ],
+      preHandler: [requirePermission(ACTIONS.OWNER_LOAN_UPDATE)],
     },
     updateOwnerLoan,
   );
@@ -81,13 +57,7 @@ function ownerLoansRoutes(app, _opts, done) {
   app.post(
     "/owner-loans/:id/repayments",
     {
-      preHandler: [
-        requirePermission(
-          ACTIONS.OWNER_LOAN_REPAYMENT_CREATE ||
-            ACTIONS.PAYMENT_CREATE ||
-            ACTIONS.CASH_CREATE,
-        ),
-      ],
+      preHandler: [requirePermission(ACTIONS.OWNER_LOAN_REPAYMENT_CREATE)],
     },
     createOwnerLoanRepayment,
   );
@@ -95,13 +65,7 @@ function ownerLoansRoutes(app, _opts, done) {
   app.post(
     "/owner-loans/:id/void",
     {
-      preHandler: [
-        requirePermission(
-          ACTIONS.OWNER_LOAN_VOID ||
-            ACTIONS.PAYMENT_DELETE ||
-            ACTIONS.CASH_DELETE,
-        ),
-      ],
+      preHandler: [requirePermission(ACTIONS.OWNER_LOAN_VOID)],
     },
     voidOwnerLoan,
   );

@@ -56,14 +56,16 @@ function normalizeMovementRow(r) {
 
   return {
     id: toInt(r.id, null),
-    movementType: r.movementType ?? null, // CUSTOMER_PAYMENT | SUPPLIER_BILL_PAYMENT | EXPENSE | REFUND | DEPOSIT_OUT
-    direction: r.direction ?? null, // IN | OUT
+    movementType: r.movementType ?? null,
+    direction: r.direction ?? null,
 
     saleId: toInt(r.saleId ?? r.sale_id, null),
     billId: toInt(r.billId ?? r.bill_id, null),
     expenseId: toInt(r.expenseId ?? r.expense_id, null),
     refundId: toInt(r.refundId ?? r.refund_id, null),
     depositId: toInt(r.depositId ?? r.deposit_id, null),
+    ownerLoanId: toInt(r.ownerLoanId ?? r.owner_loan_id, null),
+    repaymentId: toInt(r.repaymentId ?? r.repayment_id, null),
 
     location: {
       id: String(toInt(r.locationId ?? r.location_id, null) || ""),
@@ -98,7 +100,7 @@ function buildMovementsQuery({
   dateFromTs,
   dateToNextDay,
   selectClause,
-  orderClause = sql`ORDER BY created_at DESC, direction ASC, id DESC`,
+  orderClause = sql`ORDER BY omm."createdAt" DESC, omm.direction ASC, omm.id DESC`,
   limitClause = sql``,
   offsetClause = sql``,
 }) {
@@ -115,6 +117,8 @@ function buildMovementsQuery({
         NULL::bigint as "expenseId",
         NULL::bigint as "refundId",
         NULL::bigint as "depositId",
+        NULL::bigint as "ownerLoanId",
+        NULL::bigint as "repaymentId",
 
         p.location_id::bigint as "locationId",
         l.name as "locationName",
@@ -163,6 +167,8 @@ function buildMovementsQuery({
         NULL::bigint as "expenseId",
         NULL::bigint as "refundId",
         NULL::bigint as "depositId",
+        NULL::bigint as "ownerLoanId",
+        NULL::bigint as "repaymentId",
 
         sb.location_id::bigint as "locationId",
         l.name as "locationName",
@@ -209,6 +215,8 @@ function buildMovementsQuery({
         e.id::bigint as "expenseId",
         NULL::bigint as "refundId",
         NULL::bigint as "depositId",
+        NULL::bigint as "ownerLoanId",
+        NULL::bigint as "repaymentId",
 
         e.location_id::bigint as "locationId",
         l.name as "locationName",
@@ -252,6 +260,8 @@ function buildMovementsQuery({
         NULL::bigint as "expenseId",
         r.id::bigint as "refundId",
         NULL::bigint as "depositId",
+        NULL::bigint as "ownerLoanId",
+        NULL::bigint as "repaymentId",
 
         r.location_id::bigint as "locationId",
         l.name as "locationName",
@@ -300,6 +310,8 @@ function buildMovementsQuery({
         NULL::bigint as "expenseId",
         NULL::bigint as "refundId",
         d.id::bigint as "depositId",
+        NULL::bigint as "ownerLoanId",
+        NULL::bigint as "repaymentId",
 
         d.location_id::bigint as "locationId",
         l.name as "locationName",
@@ -328,6 +340,102 @@ function buildMovementsQuery({
         ON l.id = d.location_id
       LEFT JOIN users u
         ON u.id = d.cashier_id
+
+      UNION ALL
+
+      /* OWNER LOAN DISBURSEMENT -> OUT */
+      SELECT
+        ol.id::bigint as id,
+        'OWNER_LOAN_OUT'::text as "movementType",
+        'OUT'::text as direction,
+
+        NULL::bigint as "saleId",
+        NULL::bigint as "billId",
+        NULL::bigint as "expenseId",
+        NULL::bigint as "refundId",
+        NULL::bigint as "depositId",
+        ol.id::bigint as "ownerLoanId",
+        NULL::bigint as "repaymentId",
+
+        ol.location_id::bigint as "locationId",
+        l.name as "locationName",
+        l.code as "locationCode",
+
+        ol.created_by_user_id::bigint as "actorUserId",
+        u.name as "actorName",
+
+        NULL::bigint as "cashierId",
+        NULL::text as "cashierName",
+
+        c.name::text as "customerName",
+        c.phone::text as "customerPhone",
+
+        NULL::text as "supplierName",
+        ol.receiver_name::text as "payeeName",
+
+        COALESCE(ol.principal_amount, 0)::bigint as amount,
+        UPPER(COALESCE(ol.disbursement_method::text, 'OTHER'))::text as method,
+        ol.reference::text as reference,
+        ol.note::text as note,
+        NULL::bigint as "cashSessionId",
+        COALESCE(ol.disbursed_at, ol.created_at) as "createdAt"
+      FROM owner_loans ol
+      JOIN locations l
+        ON l.id = ol.location_id
+      LEFT JOIN users u
+        ON u.id = ol.created_by_user_id
+      LEFT JOIN customers c
+        ON c.id = ol.customer_id
+      WHERE UPPER(COALESCE(ol.status::text, 'OPEN')) <> 'VOID'
+
+      UNION ALL
+
+      /* OWNER LOAN REPAYMENT -> IN */
+      SELECT
+        olr.id::bigint as id,
+        'OWNER_LOAN_REPAYMENT_IN'::text as "movementType",
+        'IN'::text as direction,
+
+        NULL::bigint as "saleId",
+        NULL::bigint as "billId",
+        NULL::bigint as "expenseId",
+        NULL::bigint as "refundId",
+        NULL::bigint as "depositId",
+        olr.owner_loan_id::bigint as "ownerLoanId",
+        olr.id::bigint as "repaymentId",
+
+        ol.location_id::bigint as "locationId",
+        l.name as "locationName",
+        l.code as "locationCode",
+
+        olr.created_by_user_id::bigint as "actorUserId",
+        u.name as "actorName",
+
+        NULL::bigint as "cashierId",
+        NULL::text as "cashierName",
+
+        c.name::text as "customerName",
+        c.phone::text as "customerPhone",
+
+        NULL::text as "supplierName",
+        ol.receiver_name::text as "payeeName",
+
+        COALESCE(olr.amount, 0)::bigint as amount,
+        UPPER(COALESCE(olr.method::text, 'OTHER'))::text as method,
+        olr.reference::text as reference,
+        olr.note::text as note,
+        NULL::bigint as "cashSessionId",
+        COALESCE(olr.paid_at, olr.created_at) as "createdAt"
+      FROM owner_loan_repayments olr
+      JOIN owner_loans ol
+        ON ol.id = olr.owner_loan_id
+      JOIN locations l
+        ON l.id = ol.location_id
+      LEFT JOIN users u
+        ON u.id = olr.created_by_user_id
+      LEFT JOIN customers c
+        ON c.id = ol.customer_id
+      WHERE UPPER(COALESCE(ol.status::text, 'OPEN')) <> 'VOID'
     )
     ${selectClause}
     FROM owner_money_movements omm
@@ -372,6 +480,8 @@ async function listOwnerPayments({
           omm."expenseId",
           omm."refundId",
           omm."depositId",
+          omm."ownerLoanId",
+          omm."repaymentId",
           omm."locationId",
           omm."locationName",
           omm."locationCode",
@@ -420,7 +530,7 @@ async function getOwnerPaymentsSummary({
           COUNT(*)::int as "movementsCount",
           COUNT(*) FILTER (WHERE omm.direction = 'IN')::int as "moneyInCount",
           COUNT(*) FILTER (WHERE omm.direction = 'OUT')::int as "moneyOutCount",
-          COUNT(*) FILTER (WHERE omm."movementType" = 'CUSTOMER_PAYMENT')::int as "paymentsCount",
+          COUNT(*) FILTER (WHERE omm."movementType" IN ('CUSTOMER_PAYMENT', 'OWNER_LOAN_REPAYMENT_IN'))::int as "paymentsCount",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyIn",
           COALESCE(SUM(CASE WHEN omm.direction = 'OUT' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyOut",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE -omm.amount END), 0)::bigint as "netAmount"
@@ -443,7 +553,7 @@ async function getOwnerPaymentsSummary({
           COUNT(*)::int as "movementsCount",
           COUNT(*) FILTER (WHERE omm.direction = 'IN')::int as "moneyInCount",
           COUNT(*) FILTER (WHERE omm.direction = 'OUT')::int as "moneyOutCount",
-          COUNT(*) FILTER (WHERE omm."movementType" = 'CUSTOMER_PAYMENT')::int as "paymentsCount",
+          COUNT(*) FILTER (WHERE omm."movementType" IN ('CUSTOMER_PAYMENT', 'OWNER_LOAN_REPAYMENT_IN'))::int as "paymentsCount",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyIn",
           COALESCE(SUM(CASE WHEN omm.direction = 'OUT' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyOut",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE -omm.amount END), 0)::bigint as "netAmount"
@@ -464,12 +574,9 @@ async function getOwnerPaymentsSummary({
       moneyInCount: Number(totalsRow?.moneyInCount ?? 0),
       moneyOutCount: Number(totalsRow?.moneyOutCount ?? 0),
       paymentsCount: Number(totalsRow?.paymentsCount ?? 0),
-
       totalMoneyIn: Number(totalsRow?.totalMoneyIn ?? 0),
       totalMoneyOut: Number(totalsRow?.totalMoneyOut ?? 0),
       netAmount: Number(totalsRow?.netAmount ?? 0),
-
-      // temporary backward compatibility for old frontend cards
       totalAmount: Number(totalsRow?.totalMoneyIn ?? 0),
     },
 
@@ -484,8 +591,6 @@ async function getOwnerPaymentsSummary({
       totalMoneyIn: Number(r?.totalMoneyIn ?? 0),
       totalMoneyOut: Number(r?.totalMoneyOut ?? 0),
       netAmount: Number(r?.netAmount ?? 0),
-
-      // temporary backward compatibility for old frontend
       totalAmount: Number(r?.totalMoneyIn ?? 0),
     })),
   };
@@ -557,8 +662,6 @@ async function getOwnerPaymentsBreakdown({
     totalMoneyIn: Number(r?.totalMoneyIn ?? 0),
     totalMoneyOut: Number(r?.totalMoneyOut ?? 0),
     netAmount: Number(r?.netAmount ?? 0),
-
-    // temporary backward compatibility for old frontend
     total: Number(r?.netAmount ?? 0),
   }));
 
@@ -573,8 +676,6 @@ async function getOwnerPaymentsBreakdown({
     totalMoneyIn: Number(r?.totalMoneyIn ?? 0),
     totalMoneyOut: Number(r?.totalMoneyOut ?? 0),
     netAmount: Number(r?.netAmount ?? 0),
-
-    // temporary backward compatibility for old frontend
     total: Number(r?.netAmount ?? 0),
   }));
 

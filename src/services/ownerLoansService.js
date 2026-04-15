@@ -84,7 +84,6 @@ function deriveLoanStatus({ principalAmount, repaidAmount, requestedStatus }) {
     .toUpperCase();
 
   if (requested === "VOID") return "VOID";
-  if (requested === "DRAFT" && repaid <= 0) return "DRAFT";
   if (repaid <= 0) return "OPEN";
   if (repaid >= principal) return "REPAID";
   return "PARTIALLY_REPAID";
@@ -124,16 +123,31 @@ async function getCustomerOrThrow({ customerId, locationId, tx = db }) {
     throw err;
   }
 
-  const [row] = await tx
-    .select({
-      id: customers.id,
-      name: customers.name,
-      phone: customers.phone,
-      email: customers.email,
-      locationId: customers.locationId,
-    })
-    .from(customers)
-    .where(and(eq(customers.id, cid), eq(customers.locationId, lid)));
+  const selectedFields = {
+    id: customers.id,
+    name: customers.name,
+    phone: customers.phone,
+  };
+
+  if (customers.email) {
+    selectedFields.email = customers.email;
+  }
+
+  if (customers.locationId) {
+    selectedFields.locationId = customers.locationId;
+  }
+
+  let query = tx.select(selectedFields).from(customers);
+
+  if (customers.locationId) {
+    query = query.where(
+      and(eq(customers.id, cid), eq(customers.locationId, lid)),
+    );
+  } else {
+    query = query.where(eq(customers.id, cid));
+  }
+
+  const [row] = await query.limit(1);
 
   if (!row) {
     const err = new Error("Customer not found");
@@ -171,26 +185,48 @@ async function createCashLedgerEntryIfPossible({
   method,
   note,
   reference,
-  ownerLoanId,
 }) {
   if (!cashLedger) return;
 
+  const cashierId = actorUser?.id ? Number(actorUser.id) : null;
+  if (!cashierId) {
+    console.error("OWNER LOAN CASH LEDGER INSERT SKIPPED: missing cashierId", {
+      locationId,
+      amount,
+      direction,
+      method,
+    });
+    return;
+  }
+
   try {
     await tx.insert(cashLedger).values({
-      locationId,
-      userId: actorUser?.id ? Number(actorUser.id) : null,
-      direction,
+      locationId: Number(locationId),
+      cashierId,
+      cashSessionId: null,
+      type: "OWNER_LOAN",
+      direction: String(direction || "OUT")
+        .trim()
+        .toUpperCase(),
       amount: moneyInt(amount),
       method: normalizeMethod(method, "OTHER"),
-      type: "OWNER_LOAN",
       reference: cleanStr(reference),
+      saleId: null,
+      paymentId: null,
+      expenseId: null,
+      creditId: null,
+      creditPaymentId: null,
       note: cleanStr(note),
-      ownerLoanId: Number(ownerLoanId),
       createdAt: new Date(),
-      updatedAt: new Date(),
     });
-  } catch {
-    // Deliberately non-fatal so owner loan flow does not break if cash ledger schema differs.
+  } catch (error) {
+    console.error("OWNER LOAN CASH LEDGER INSERT FAILED", {
+      locationId,
+      amount,
+      direction,
+      method,
+      error: error?.message || error,
+    });
   }
 }
 
@@ -223,6 +259,7 @@ async function listOwnerLoans({
         ilike(ownerLoans.receiverEmail, like),
         ilike(ownerLoans.reference, like),
         ilike(ownerLoans.note, like),
+        ilike(customers.name, like),
         sql`CAST(${ownerLoans.id} AS text) ILIKE ${like}`,
       ),
     );
@@ -274,6 +311,10 @@ async function listOwnerLoans({
         sql`GREATEST(${ownerLoans.principalAmount} - ${ownerLoans.repaidAmount}, 0)::int`.as(
           "balanceAmount",
         ),
+      remainingAmount:
+        sql`GREATEST(${ownerLoans.principalAmount} - ${ownerLoans.repaidAmount}, 0)::int`.as(
+          "remainingAmount",
+        ),
       currency: ownerLoans.currency,
       disbursementMethod: ownerLoans.disbursementMethod,
       reference: ownerLoans.reference,
@@ -303,6 +344,10 @@ async function listOwnerLoans({
           ELSE 0
         END
       `.as("daysOverdue"),
+      repaymentsCount:
+        sql`COALESCE((SELECT COUNT(*)::int FROM owner_loan_repayments r WHERE r.owner_loan_id = ${ownerLoans.id}), 0)`.as(
+          "repaymentsCount",
+        ),
     })
     .from(ownerLoans)
     .leftJoin(customers, eq(customers.id, ownerLoans.customerId))
@@ -317,6 +362,10 @@ async function listOwnerLoans({
 async function getOwnerLoan({ id, locationId }) {
   const loanId = requireValidLoanId(id);
   const lid = requireValidLocationId(locationId);
+
+  const selectedCustomerEmail = customers.email
+    ? { customerEmail: customers.email }
+    : {};
 
   const [loan] = await db
     .select({
@@ -333,6 +382,10 @@ async function getOwnerLoan({ id, locationId }) {
         sql`GREATEST(${ownerLoans.principalAmount} - ${ownerLoans.repaidAmount}, 0)::int`.as(
           "balanceAmount",
         ),
+      remainingAmount:
+        sql`GREATEST(${ownerLoans.principalAmount} - ${ownerLoans.repaidAmount}, 0)::int`.as(
+          "remainingAmount",
+        ),
       currency: ownerLoans.currency,
       disbursementMethod: ownerLoans.disbursementMethod,
       reference: ownerLoans.reference,
@@ -345,7 +398,7 @@ async function getOwnerLoan({ id, locationId }) {
       updatedAt: ownerLoans.updatedAt,
       customerName: customers.name,
       customerPhone: customers.phone,
-      customerEmail: customers.email,
+      ...selectedCustomerEmail,
       isOverdue: sql`
         CASE
           WHEN ${ownerLoans.dueDate} IS NOT NULL
@@ -378,7 +431,12 @@ async function getOwnerLoan({ id, locationId }) {
   const repayments = await db
     .select()
     .from(ownerLoanRepayments)
-    .where(eq(ownerLoanRepayments.ownerLoanId, loanId))
+    .where(
+      and(
+        eq(ownerLoanRepayments.ownerLoanId, loanId),
+        eq(ownerLoanRepayments.locationId, lid),
+      ),
+    )
     .orderBy(desc(ownerLoanRepayments.id));
 
   return {
@@ -422,6 +480,7 @@ async function createOwnerLoan({ actorUser, payload }) {
 
   const createdByUserId = actorUser?.id ? Number(actorUser.id) : null;
   const receiverType = normalizeReceiverType(data.receiverType, "OTHER");
+
   const receiverName =
     receiverType === "CUSTOMER"
       ? cleanStr(customer?.name) || cleanStr(data.receiverName)
@@ -476,7 +535,6 @@ async function createOwnerLoan({ actorUser, payload }) {
       method: loan.disbursementMethod,
       note: `Owner loan disbursed to ${receiverName || "receiver"}`,
       reference: loan.reference,
-      ownerLoanId: loan.id,
     });
 
     return loan;
@@ -740,6 +798,7 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
     const [repayment] = await tx
       .insert(ownerLoanRepayments)
       .values({
+        locationId,
         ownerLoanId: loanId,
         amount,
         method: normalizeMethod(data.method, "OTHER"),
@@ -777,7 +836,6 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
       method: repayment.method,
       note: `Owner loan repayment from ${loan.receiverName || "receiver"}`,
       reference: repayment.reference,
-      ownerLoanId: loanId,
     });
 
     return {
@@ -786,6 +844,7 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
         id: loanId,
         repaidAmount: newRepaidAmount,
         balanceAmount: buildLoanBalance(principalAmount, newRepaidAmount),
+        remainingAmount: buildLoanBalance(principalAmount, newRepaidAmount),
         status: newStatus,
       },
       auditMeta: {
@@ -954,16 +1013,30 @@ async function ownerLoanSummary({ locationId, status, receiverType }) {
     overdueAmount: 0,
   };
 
+  const loansCount = Number(r.loansCount || 0);
+  const totalPrincipalAmount = Number(r.totalPrincipalAmount || 0);
+  const totalRepaidAmount = Number(r.totalRepaidAmount || 0);
+  const outstandingAmount = Number(r.outstandingAmount || 0);
+  const openCount = Number(r.openCount || 0);
+  const partialCount = Number(r.partialCount || 0);
+  const repaidCount = Number(r.repaidCount || 0);
+  const overdueCount = Number(r.overdueCount || 0);
+  const overdueAmount = Number(r.overdueAmount || 0);
+
   return {
-    loansCount: Number(r.loansCount || 0),
-    totalPrincipalAmount: Number(r.totalPrincipalAmount || 0),
-    totalRepaidAmount: Number(r.totalRepaidAmount || 0),
-    outstandingAmount: Number(r.outstandingAmount || 0),
-    openCount: Number(r.openCount || 0),
-    partialCount: Number(r.partialCount || 0),
-    repaidCount: Number(r.repaidCount || 0),
-    overdueCount: Number(r.overdueCount || 0),
-    overdueAmount: Number(r.overdueAmount || 0),
+    loansCount,
+    totalPrincipalAmount,
+    totalRepaidAmount,
+    outstandingAmount,
+    totalRemainingAmount: outstandingAmount,
+    openCount,
+    openLoansCount: openCount,
+    partialCount,
+    partiallyRepaidCount: partialCount,
+    repaidCount,
+    repaidLoansCount: repaidCount,
+    overdueCount,
+    overdueAmount,
   };
 }
 

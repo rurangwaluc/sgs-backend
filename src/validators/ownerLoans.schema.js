@@ -37,6 +37,50 @@ function optionalDateString() {
     );
 }
 
+function optionalPositiveIntFromForm() {
+  return z.preprocess((value) => {
+    if (value === "" || value === null || value === undefined) {
+      return undefined;
+    }
+    return value;
+  }, z.coerce.number().int().positive().optional());
+}
+
+function optionalNonNegativeIntFromForm() {
+  return z.preprocess((value) => {
+    if (value === "" || value === null || value === undefined) {
+      return undefined;
+    }
+    return value;
+  }, z.coerce.number().int().min(0).optional());
+}
+
+function requiredPositiveIntFromForm(fieldLabel = "Value") {
+  return z.preprocess(
+    (value) => {
+      if (value === "" || value === null || value === undefined) {
+        return undefined;
+      }
+      return value;
+    },
+    z.coerce
+      .number()
+      .int()
+      .positive({
+        message: `${fieldLabel} must be greater than 0`,
+      }),
+  );
+}
+
+function nullableOptionalPositiveIntFromForm() {
+  return z.preprocess((value) => {
+    if (value === "") return undefined;
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    return value;
+  }, z.coerce.number().int().positive().nullable().optional());
+}
+
 const receiverTypeSchema = z
   .string()
   .trim()
@@ -71,16 +115,16 @@ const loanStatusSchema = z
 
 const ownerLoanCreateSchema = z
   .object({
-    locationId: z.coerce.number().int().positive().optional(),
+    locationId: optionalPositiveIntFromForm(),
 
     receiverType: receiverTypeSchema,
-    customerId: z.coerce.number().int().positive().optional(),
+    customerId: optionalPositiveIntFromForm(),
 
     receiverName: z.string().trim().min(1).max(180),
     receiverPhone: optionalTrimmedString(40),
     receiverEmail: optionalTrimmedString(180),
 
-    principalAmount: z.coerce.number().int().positive(),
+    principalAmount: requiredPositiveIntFromForm("Loan amount"),
     currency: optionalTrimmedString(8),
 
     disbursementMethod: loanMethodSchema.optional(),
@@ -97,7 +141,7 @@ const ownerLoanCreateSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["customerId"],
-        message: "customerId is required when receiverType is CUSTOMER",
+        message: "Please select an existing customer",
       });
     }
 
@@ -117,13 +161,14 @@ const ownerLoanCreateSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["dueDate"],
-          message: "dueDate cannot be before disbursedAt",
+          message: "Repayment date cannot be before disbursement date",
         });
       }
     }
 
     if (data.status) {
       const normalizedStatus = String(data.status).trim().toUpperCase();
+
       if (
         normalizedStatus === "PARTIALLY_REPAID" ||
         normalizedStatus === "REPAID"
@@ -132,7 +177,7 @@ const ownerLoanCreateSchema = z
           code: z.ZodIssueCode.custom,
           path: ["status"],
           message:
-            "New loans cannot start as PARTIALLY_REPAID or REPAID without repayment records",
+            "A new loan cannot start as partially repaid or fully repaid",
         });
       }
 
@@ -140,7 +185,7 @@ const ownerLoanCreateSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["status"],
-          message: "New loans cannot be created directly as VOID",
+          message: "A new loan cannot be created directly as void",
         });
       }
     }
@@ -149,13 +194,13 @@ const ownerLoanCreateSchema = z
 const ownerLoanUpdateSchema = z
   .object({
     receiverType: receiverTypeSchema.optional(),
-    customerId: z.coerce.number().int().positive().nullable().optional(),
+    customerId: nullableOptionalPositiveIntFromForm(),
 
     receiverName: z.string().trim().min(1).max(180).optional(),
     receiverPhone: optionalTrimmedString(40),
     receiverEmail: optionalTrimmedString(180),
 
-    principalAmount: z.coerce.number().int().positive().optional(),
+    principalAmount: optionalPositiveIntFromForm(),
     currency: optionalTrimmedString(8),
 
     disbursementMethod: loanMethodSchema.optional(),
@@ -221,7 +266,7 @@ const ownerLoanUpdateSchema = z
   });
 
 const ownerLoanRepaymentCreateSchema = z.object({
-  amount: z.coerce.number().int().positive(),
+  amount: requiredPositiveIntFromForm("Repayment amount"),
   method: repaymentMethodSchema,
   paidAt: optionalDateString(),
   reference: optionalTrimmedString(120),
@@ -230,16 +275,16 @@ const ownerLoanRepaymentCreateSchema = z.object({
 
 const ownerLoanListQuerySchema = z.object({
   q: z.string().trim().min(1).max(200).optional(),
-  locationId: z.coerce.number().int().positive().optional(),
-  customerId: z.coerce.number().int().positive().optional(),
+  locationId: optionalPositiveIntFromForm(),
+  customerId: optionalPositiveIntFromForm(),
   receiverType: receiverTypeSchema.optional(),
   status: loanStatusSchema.optional(),
   dueFrom: optionalDateString(),
   dueTo: optionalDateString(),
   disbursedFrom: optionalDateString(),
   disbursedTo: optionalDateString(),
-  limit: z.coerce.number().int().min(1).max(100).optional(),
-  offset: z.coerce.number().int().min(0).optional(),
+  limit: optionalPositiveIntFromForm(),
+  offset: optionalNonNegativeIntFromForm(),
 });
 
 const ownerLoanVoidSchema = z.object({

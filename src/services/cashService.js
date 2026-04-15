@@ -1,3 +1,5 @@
+"use strict";
+
 const { db } = require("../config/db");
 const { cashLedger } = require("../db/schema/cash_ledger.schema");
 const { sql } = require("drizzle-orm");
@@ -8,8 +10,16 @@ function txMeta(type, direction, amount, method, note) {
   return { type, direction, amount, method, note };
 }
 
-async function createCashTx({ locationId, cashierId, type, amount, method, note }) {
-  const direction = type === "PETTY_CASH_OUT" || type === "VERSEMENT" ? "OUT" : "IN";
+async function createCashTx({
+  locationId,
+  cashierId,
+  type,
+  amount,
+  method,
+  note,
+}) {
+  const direction =
+    type === "PETTY_CASH_OUT" || type === "VERSEMENT" ? "OUT" : "IN";
   const m = method || (type === "VERSEMENT" ? "BANK" : "CASH");
 
   const [row] = await db
@@ -17,23 +27,30 @@ async function createCashTx({ locationId, cashierId, type, amount, method, note 
     .values({
       locationId,
       cashierId,
+      cashSessionId: null,
       type,
       direction,
       amount,
       method: m,
+      reference: null,
+      saleId: null,
+      paymentId: null,
+      expenseId: null,
+      creditId: null,
+      creditPaymentId: null,
       note: note || null,
+      createdAt: new Date(),
     })
     .returning();
 
-  // audit
   await logAudit({
     userId: cashierId,
     action:
       type === "VERSEMENT"
         ? AUDIT.VERSEMENT
         : direction === "IN"
-        ? AUDIT.CASH_IN
-        : AUDIT.CASH_OUT,
+          ? AUDIT.CASH_IN
+          : AUDIT.CASH_OUT,
     entity: "cash_ledger",
     entityId: row.id,
     description: `Cash transaction recorded: ${type} ${direction} ${amount}`,
@@ -43,11 +60,6 @@ async function createCashTx({ locationId, cashierId, type, amount, method, note 
   return row;
 }
 
-/**
- * ✅ Ledger listing (scoped)
- * - Always filters by location_id.
- * - If cashierId is provided, it ALSO filters by cashier_id (cashier-safe).
- */
 async function listLedger({ locationId, cashierId = null, limit = 100 }) {
   const res = await db.execute(sql`
     SELECT
@@ -62,6 +74,9 @@ async function listLedger({ locationId, cashierId = null, limit = 100 }) {
       reference,
       sale_id as "saleId",
       payment_id as "paymentId",
+      expense_id as "expenseId",
+      credit_id as "creditId",
+      credit_payment_id as "creditPaymentId",
       note,
       created_at as "createdAt"
     FROM cash_ledger
@@ -74,11 +89,6 @@ async function listLedger({ locationId, cashierId = null, limit = 100 }) {
   return res.rows || res;
 }
 
-/**
- * ✅ Today summary (Africa/Kigali day boundary)
- * - Always filters by location_id.
- * - If cashierId is provided, also filters by cashier_id.
- */
 async function summaryToday({ locationId, cashierId = null }) {
   const nowKigali = sql`(now() AT TIME ZONE 'Africa/Kigali')`;
   const startKigali = sql`date_trunc('day', ${nowKigali})`;
@@ -88,8 +98,10 @@ async function summaryToday({ locationId, cashierId = null }) {
     SELECT
       COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE 0 END), 0)::bigint as "totalIn",
       COALESCE(SUM(CASE WHEN direction = 'OUT' THEN amount ELSE 0 END), 0)::bigint as "totalOut",
-      (COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE 0 END), 0)
-       - COALESCE(SUM(CASE WHEN direction = 'OUT' THEN amount ELSE 0 END), 0))::bigint as "net"
+      (
+        COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE 0 END), 0)
+        - COALESCE(SUM(CASE WHEN direction = 'OUT' THEN amount ELSE 0 END), 0)
+      )::bigint as "net"
     FROM cash_ledger
     WHERE location_id = ${locationId}
       ${cashierId ? sql`AND cashier_id = ${cashierId}` : sql``}

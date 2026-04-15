@@ -102,6 +102,10 @@ const ownerLoanRepayments = pgTable(
   {
     id: serial("id").primaryKey(),
 
+    locationId: integer("location_id")
+      .notNull()
+      .references(() => locations.id, { onDelete: "restrict" }),
+
     ownerLoanId: integer("owner_loan_id")
       .notNull()
       .references(() => ownerLoans.id, { onDelete: "cascade" }),
@@ -124,6 +128,9 @@ const ownerLoanRepayments = pgTable(
       .defaultNow(),
   },
   (t) => ({
+    ownerLoanRepaymentsLocationIdx: index(
+      "owner_loan_repayments_location_idx",
+    ).on(t.locationId),
     ownerLoanRepaymentsLoanIdx: index("owner_loan_repayments_loan_idx").on(
       t.ownerLoanId,
     ),
