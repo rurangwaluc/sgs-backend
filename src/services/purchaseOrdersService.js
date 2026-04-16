@@ -84,6 +84,74 @@ function mapMaybeNumericId(value) {
   return Number.isFinite(n) ? n : value;
 }
 
+function buildBranchCodePart(locationRow) {
+  const raw =
+    cleanText(locationRow?.code, 40) ||
+    cleanText(locationRow?.name, 40) ||
+    "MAIN";
+  const cleaned = String(raw)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "MAIN";
+}
+
+function buildDatePart(date = new Date()) {
+  const d = new Date(date);
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
+
+function buildAutoCode(prefix, branchCode, sequence, date = new Date()) {
+  const seq = String(Math.max(1, Number(sequence) || 1)).padStart(4, "0");
+  return `${prefix}-${buildBranchCodePart({ code: branchCode })}-${buildDatePart(date)}-${seq}`;
+}
+
+function extractAutoCodeSequence(value, prefix, branchCode, date = new Date()) {
+  const raw = cleanText(value, 160);
+  if (!raw) return 0;
+  const expectedPrefix = `${prefix}-${buildBranchCodePart({ code: branchCode })}-${buildDatePart(date)}-`;
+  if (!raw.startsWith(expectedPrefix)) return 0;
+  const tail = raw.slice(expectedPrefix.length);
+  const seq = Number(tail);
+  return Number.isInteger(seq) && seq > 0 ? seq : 0;
+}
+
+async function buildNextPurchaseOrderCodes(tx, { locationRow, orderedAt }) {
+  const branchCode = buildBranchCodePart(locationRow);
+  const effectiveDate = orderedAt || new Date();
+  const result = await tx.execute(sql`
+    SELECT po.po_no as "poNo", po.reference as "reference"
+    FROM purchase_orders po
+    WHERE po.location_id = ${Number(locationRow.id)}
+    ORDER BY po.id DESC
+    LIMIT 500
+  `);
+
+  const rows = result.rows || result || [];
+  const poMax = rows.reduce((maxValue, row) => {
+    return Math.max(
+      maxValue,
+      extractAutoCodeSequence(row?.poNo, "PO", branchCode, effectiveDate),
+    );
+  }, 0);
+  const refMax = rows.reduce((maxValue, row) => {
+    return Math.max(
+      maxValue,
+      extractAutoCodeSequence(row?.reference, "REF", branchCode, effectiveDate),
+    );
+  }, 0);
+  const nextSequence = Math.max(poMax, refMax, 0) + 1;
+
+  return {
+    poNo: buildAutoCode("PO", branchCode, nextSequence, effectiveDate),
+    reference: buildAutoCode("REF", branchCode, nextSequence, effectiveDate),
+  };
+}
+
 async function getLocationOrThrow(tx, locationId) {
   const rows = await tx
     .select({
@@ -321,7 +389,7 @@ async function getPurchaseOrderByIdUsing(
 
       po.po_no as "poNo",
       po.reference as "reference",
-      COALESCE(s.default_currency, 'RWF') as "currency",
+      COALESCE(po.currency, s.default_currency, 'RWF') as "currency",
       po.status as "status",
       po.notes as "notes",
 
@@ -497,17 +565,26 @@ async function createPurchaseOrder({
       supplier.defaultCurrency || "RWF",
     );
 
+    const orderedAtDate = parseDateOrNull(orderedAt) || new Date();
+    const nextCodes = await buildNextPurchaseOrderCodes(tx, {
+      locationRow: location,
+      orderedAt: orderedAtDate,
+    });
+
+    const finalPoNo = cleanText(poNo, 120) || nextCodes.poNo;
+    const finalReference = cleanText(reference, 120) || nextCodes.reference;
+
     const [created] = await tx
       .insert(purchaseOrders)
       .values({
         locationId: Number(locationId),
         supplierId: Number(supplierId),
-        poNo: cleanText(poNo, 120),
-        reference: cleanText(reference, 120),
+        poNo: finalPoNo,
+        reference: finalReference,
         currency: finalCurrency,
         status: "DRAFT",
         notes: cleanText(notes, 4000),
-        orderedAt: parseDateOrNull(orderedAt) || new Date(),
+        orderedAt: orderedAtDate,
         expectedAt: parseDateOrNull(expectedAt),
         approvedAt: null,
         createdByUserId: Number(actorUser.id),
@@ -888,7 +965,7 @@ async function listPurchaseOrders({
 
       po.po_no as "poNo",
       po.reference as "reference",
-      COALESCE(s.default_currency, 'RWF') as "currency",
+      COALESCE(po.currency, s.default_currency, 'RWF') as "currency",
       po.status as "status",
       po.notes as "notes",
 

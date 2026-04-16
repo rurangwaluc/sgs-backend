@@ -55,6 +55,14 @@ function joinParts(parts, separator = " • ", fallback = "-") {
   return out.length ? out.join(separator) : fallback;
 }
 
+function hasMeaningfulNotes(value) {
+  const s = safeTextSoft(value, "");
+  if (!s) return false;
+  const low = s.toLowerCase();
+  if (["test", "ok", "none", "n/a", "-", "."].includes(low)) return false;
+  return s.length >= 4;
+}
+
 async function getPurchaseOrderPrintableData({
   purchaseOrderId,
   locationId = null,
@@ -189,7 +197,7 @@ async function getPurchaseOrderPrintableData({
       supplierEmail: safeTextSoft(purchaseOrder.supplierEmail, ""),
       supplierAddress: safeTextSoft(purchaseOrder.supplierAddress, ""),
 
-      poNo: safeText(purchaseOrder.poNo, `PO-${purchaseOrder.id}`),
+      poNo: safeText(purchaseOrder.poNo),
       reference: safeTextSoft(purchaseOrder.reference, ""),
       currency: normalizeCurrency(purchaseOrder.currency),
       status: safeText(purchaseOrder.status, "DRAFT"),
@@ -220,24 +228,31 @@ async function getPurchaseOrderPrintableData({
 }
 
 const COLORS = {
+  ink: "#111827",
   black: "#111111",
-  muted: "#666666",
-  line: "#D8D8D8",
-  softer: "#FAFAFA",
+  text: "#1F2937",
+  muted: "#6B7280",
+  lightText: "#9CA3AF",
+  line: "#D1D5DB",
+  lineDark: "#9CA3AF",
+  softLine: "#E5E7EB",
+  soft: "#F9FAFB",
+  softCard: "#F3F4F6",
+  brand: "#111827",
   white: "#FFFFFF",
 };
 
 const PAGE = {
   width: 595.28,
   height: 841.89,
-  marginLeft: 38,
-  marginRight: 38,
-  marginTop: 34,
-  marginBottom: 34,
+  marginLeft: 36,
+  marginRight: 36,
+  marginTop: 30,
+  marginBottom: 30,
 };
 
 function drawText(doc, str, x, y, options = {}) {
-  doc.fillColor(options.color || COLORS.black);
+  doc.fillColor(options.color || COLORS.text);
   doc.font(options.font || "Helvetica");
   doc.fontSize(options.size || 10);
   doc.text(String(str == null ? "" : str), x, y, {
@@ -245,6 +260,7 @@ function drawText(doc, str, x, y, options = {}) {
     align: options.align,
     ellipsis: options.ellipsis,
     lineGap: options.lineGap,
+    lineBreak: options.lineBreak,
   });
 }
 
@@ -270,224 +286,344 @@ function drawRect(doc, x, y, w, h, fill = null, stroke = null, lineWidth = 1) {
   }
 }
 
-function sectionBar(doc, label, x, y, w, h = 18) {
-  drawRect(doc, x, y, w, h, COLORS.black, null);
-  drawText(doc, String(label || "").toUpperCase(), x, y + 4, {
-    width: w,
-    align: "center",
-    font: "Helvetica-Bold",
-    size: 9,
-    color: COLORS.white,
-  });
+function drawRoundedRect(
+  doc,
+  x,
+  y,
+  w,
+  h,
+  r = 8,
+  fill = null,
+  stroke = null,
+  lineWidth = 1,
+) {
+  if (fill) {
+    doc.save();
+    doc.fillColor(fill).roundedRect(x, y, w, h, r).fill();
+    doc.restore();
+  }
+  if (stroke) {
+    doc.save();
+    doc
+      .lineWidth(lineWidth)
+      .strokeColor(stroke)
+      .roundedRect(x, y, w, h, r)
+      .stroke();
+    doc.restore();
+  }
 }
 
-function valueLine(doc, label, value, x, y, w, labelW = 78) {
+function sectionTitle(doc, label, x, y, w) {
   drawText(doc, String(label || "").toUpperCase(), x, y, {
+    width: w,
+    font: "Helvetica-Bold",
+    size: 8.5,
+    color: COLORS.muted,
+  });
+  drawLine(doc, x, y + 14, x + w, y + 14, COLORS.softLine, 1);
+}
+
+function infoRow(doc, label, value, x, y, w, labelW = 80) {
+  drawText(doc, label, x, y, {
     width: labelW,
     font: "Helvetica-Bold",
     size: 8.5,
-    color: COLORS.black,
+    color: COLORS.muted,
   });
-
-  const lx = x + labelW + 6;
-  const lw = Math.max(20, w - labelW - 6);
-
-  drawLine(doc, lx, y + 10, lx + lw, y + 10, "#7A7A7A", 0.8);
-
-  if (safeTextSoft(value)) {
-    drawText(doc, safeTextSoft(value), lx + 3, y - 1, {
-      width: lw - 6,
-      font: "Helvetica",
-      size: 9.5,
-      color: COLORS.black,
-      ellipsis: true,
-    });
-  }
-}
-
-function multiField(doc, label, value, x, y, w, minHeight = 34) {
-  drawText(doc, String(label || "").toUpperCase(), x, y, {
-    width: w,
-    font: "Helvetica-Bold",
-    size: 8.5,
-    color: COLORS.black,
+  drawText(doc, safeTextSoft(value, "-"), x + labelW + 8, y, {
+    width: w - labelW - 8,
+    font: "Helvetica",
+    size: 9.5,
+    color: COLORS.text,
+    ellipsis: true,
   });
-
-  drawLine(doc, x, y + 14, x + w, y + 14, "#7A7A7A", 0.8);
-
-  const v = safeTextSoft(value, "");
-  let rendered = 0;
-
-  if (v) {
-    rendered = doc.heightOfString(v, { width: w, align: "left" });
-    drawText(doc, v, x, y + 18, {
-      width: w,
-      font: "Helvetica",
-      size: 9.5,
-      color: COLORS.black,
-      lineGap: 1,
-    });
-  }
-
-  return Math.max(minHeight, 18 + rendered);
 }
 
 function drawHeader(doc, purchaseOrder, continuation = false) {
   const left = PAGE.marginLeft;
   const right = PAGE.width - PAGE.marginRight;
   const top = PAGE.marginTop;
-  const titleY = continuation ? top : top + 2;
 
-  drawText(doc, "ORDER", left, titleY, {
+  if (!continuation) {
+    drawRoundedRect(doc, left, top, right - left, 78, 14, COLORS.brand, null);
+  } else {
+    drawRoundedRect(doc, left, top, right - left, 58, 14, COLORS.brand, null);
+  }
+
+  drawText(doc, purchaseOrder.locationName || "Business", left + 18, top + 16, {
+    width: 220,
     font: "Helvetica-Bold",
-    size: 24,
-  });
-  drawText(doc, " SHEET", left + 80, titleY, {
-    font: "Helvetica",
-    size: 24,
+    size: 18,
+    color: COLORS.white,
   });
 
-  valueLine(
+  drawText(
     doc,
-    "Order Date",
-    formatDate(purchaseOrder.orderedAt || purchaseOrder.createdAt),
-    right - 230,
-    titleY + 5,
-    105,
-    62,
+    purchaseOrder.locationCode
+      ? `Branch code: ${purchaseOrder.locationCode}`
+      : "Branch",
+    left + 18,
+    top + 39,
+    {
+      width: 220,
+      font: "Helvetica",
+      size: 9,
+      color: "#E5E7EB",
+    },
   );
-  valueLine(
+
+  drawText(doc, "PURCHASE ORDER", left + 18, top + (continuation ? 18 : 54), {
+    width: 240,
+    font: "Helvetica-Bold",
+    size: continuation ? 14 : 11,
+    color: continuation ? COLORS.white : "#D1D5DB",
+  });
+
+  const metaW = 208;
+  const metaX = right - metaW - 14;
+  const metaY = top + 10;
+  const metaH = continuation ? 38 : 58;
+
+  drawRoundedRect(doc, metaX, metaY, metaW, metaH, 10, COLORS.white, null);
+
+  drawText(doc, "ORDER DATE", metaX + 12, metaY + 9, {
+    width: 70,
+    font: "Helvetica-Bold",
+    size: 7.5,
+    color: COLORS.muted,
+  });
+  drawText(
     doc,
-    "Order #",
-    safeText(purchaseOrder.poNo, `PO-${purchaseOrder.id}`),
-    right - 112,
-    titleY + 5,
-    112,
-    50,
+    formatDate(purchaseOrder.orderedAt || purchaseOrder.createdAt),
+    metaX + 92,
+    metaY + 8,
+    {
+      width: metaW - 104,
+      align: "right",
+      font: "Helvetica-Bold",
+      size: 10,
+      color: COLORS.ink,
+      lineBreak: false,
+    },
   );
 
   if (!continuation) {
-    drawLine(doc, left, titleY + 34, right, titleY + 34, COLORS.line, 1);
+    drawLine(
+      doc,
+      metaX + 12,
+      metaY + 26,
+      metaX + metaW - 12,
+      metaY + 26,
+      COLORS.softLine,
+      1,
+    );
+
+    const orderNoText = safeText(purchaseOrder.poNo);
+    doc.save();
+    doc.font("Helvetica-Bold");
+    doc.fontSize(orderNoText.length > 24 ? 9.2 : 10);
+    doc.fillColor(COLORS.ink);
+
+    drawText(doc, "ORDER NUMBER", metaX + 12, metaY + 35, {
+      width: 82,
+      font: "Helvetica-Bold",
+      size: 7.5,
+      color: COLORS.muted,
+    });
+
+    doc.text(orderNoText, metaX + 98, metaY + 34, {
+      width: metaW - 110,
+      align: "right",
+      ellipsis: true,
+      lineBreak: false,
+    });
+    doc.restore();
   }
+
+  return top + (continuation ? 72 : 96);
 }
 
-function drawTopDetails(doc, purchaseOrder) {
-  const x = PAGE.marginLeft + 5;
-  const w = PAGE.width - PAGE.marginLeft - PAGE.marginRight - 10;
-  let y = 92;
+function drawSupplierAndDelivery(doc, purchaseOrder, y) {
+  const left = PAGE.marginLeft;
+  const right = PAGE.width - PAGE.marginRight;
+  const gap = 16;
+  const cardW = (right - left - gap) / 2;
+  const cardH = 140;
 
-  sectionBar(doc, "Purchase Order Details", x, y, w, 18);
-  y += 28;
+  drawRoundedRect(
+    doc,
+    left,
+    y,
+    cardW,
+    cardH,
+    12,
+    COLORS.soft,
+    COLORS.softLine,
+    1,
+  );
+  drawRoundedRect(
+    doc,
+    left + cardW + gap,
+    y,
+    cardW,
+    cardH,
+    12,
+    COLORS.soft,
+    COLORS.softLine,
+    1,
+  );
 
-  valueLine(doc, "Supplier", purchaseOrder.supplierName, x, y, 228, 68);
-  valueLine(
+  sectionTitle(doc, "Supplier", left + 14, y + 12, cardW - 28);
+  drawText(doc, purchaseOrder.supplierName, left + 14, y + 28, {
+    width: cardW - 28,
+    font: "Helvetica-Bold",
+    size: 11,
+    color: COLORS.ink,
+  });
+
+  const supplierContactName = safeTextSoft(
+    purchaseOrder.supplierContactName,
+    "-",
+  );
+  const supplierPhone = safeTextSoft(purchaseOrder.supplierPhone, "-");
+  const supplierEmail = safeTextSoft(purchaseOrder.supplierEmail, "-");
+
+  drawText(doc, "Contact person", left + 14, y + 50, {
+    width: 90,
+    font: "Helvetica-Bold",
+    size: 8.5,
+    color: COLORS.muted,
+  });
+  drawText(doc, supplierContactName, left + 108, y + 50, {
+    width: cardW - 122,
+    font: "Helvetica",
+    size: 9,
+    color: COLORS.text,
+    ellipsis: true,
+  });
+
+  drawText(doc, "Phone", left + 14, y + 68, {
+    width: 90,
+    font: "Helvetica-Bold",
+    size: 8.5,
+    color: COLORS.muted,
+  });
+  drawText(doc, supplierPhone, left + 108, y + 68, {
+    width: cardW - 122,
+    font: "Helvetica",
+    size: 9,
+    color: COLORS.text,
+    ellipsis: true,
+  });
+
+  drawText(doc, "Email", left + 14, y + 86, {
+    width: 90,
+    font: "Helvetica-Bold",
+    size: 8.5,
+    color: COLORS.muted,
+  });
+  drawText(doc, supplierEmail, left + 108, y + 86, {
+    width: cardW - 122,
+    font: "Helvetica",
+    size: 9,
+    color: COLORS.text,
+    ellipsis: true,
+  });
+
+  drawText(doc, purchaseOrder.supplierAddress || "-", left + 14, y + 108, {
+    width: cardW - 28,
+    font: "Helvetica",
+    size: 8.8,
+    color: COLORS.text,
+    lineGap: 2,
+  });
+
+  sectionTitle(
+    doc,
+    "Delivery / Order Info",
+    left + cardW + gap + 14,
+    y + 12,
+    cardW - 28,
+  );
+  infoRow(
     doc,
     "Branch",
     `${purchaseOrder.locationName}${purchaseOrder.locationCode ? ` (${purchaseOrder.locationCode})` : ""}`,
-    320,
-    y,
-    230,
+    left + cardW + gap + 14,
+    y + 30,
+    cardW - 28,
     58,
   );
-
-  y += 38;
-
-  multiField(
+  infoRow(
     doc,
-    "Address",
-    purchaseOrder.supplierAddress || purchaseOrder.locationAddress || "-",
-    x,
-    y,
-    228,
-    38,
+    "Reference",
+    purchaseOrder.reference || "-",
+    left + cardW + gap + 14,
+    y + 50,
+    cardW - 28,
+    58,
   );
-
-  valueLine(doc, "Reference", purchaseOrder.reference || "-", 320, y, 230, 70);
-
-  y += 44;
-
-  multiField(
-    doc,
-    "Contact",
-    joinParts(
-      [
-        purchaseOrder.supplierContactName,
-        purchaseOrder.supplierPhone,
-        purchaseOrder.supplierEmail,
-      ],
-      " • ",
-      "-",
-    ),
-    x,
-    y,
-    228,
-    34,
-  );
-
-  valueLine(
+  infoRow(
     doc,
     "Expected",
     formatDate(purchaseOrder.expectedAt),
-    320,
-    y,
-    230,
-    62,
+    left + cardW + gap + 14,
+    y + 70,
+    cardW - 28,
+    58,
+  );
+  infoRow(
+    doc,
+    "Status",
+    purchaseOrder.status,
+    left + cardW + gap + 14,
+    y + 90,
+    cardW - 28,
+    58,
   );
 
-  return y + 46;
+  return y + cardH + 18;
 }
 
 function getColumns() {
   return [
-    { key: "itemNo", label: "ITEM #", x: 43, width: 52, align: "center" },
-    { key: "item", label: "ITEM", x: 95, width: 245, align: "left" },
-    { key: "qty", label: "QTY", x: 340, width: 55, align: "center" },
-    { key: "price", label: "PRICE", x: 395, width: 88, align: "right" },
-    { key: "received", label: "RECEIVED", x: 483, width: 74, align: "center" },
+    { key: "itemNo", label: "#", x: 40, width: 34, align: "center" },
+    {
+      key: "item",
+      label: "ITEM DESCRIPTION",
+      x: 76,
+      width: 274,
+      align: "left",
+    },
+    { key: "qty", label: "QTY", x: 352, width: 52, align: "center" },
+    { key: "price", label: "UNIT PRICE", x: 406, width: 72, align: "right" },
+    { key: "total", label: "LINE TOTAL", x: 480, width: 76, align: "right" },
   ];
 }
 
-function drawTableSkeleton(doc, yTop) {
-  const left = 43;
-  const right = 557;
-  const bottom = 705;
-  const headerH = 22;
+function drawTableHeader(doc, yTop) {
+  const left = 40;
+  const right = 556;
+  const headerH = 24;
   const cols = getColumns();
 
-  drawRect(doc, left, yTop, right - left, headerH, COLORS.black, null);
+  drawRoundedRect(doc, left, yTop, right - left, headerH, 8, COLORS.ink, null);
+
   cols.forEach((col) => {
-    drawText(doc, col.label, col.x, yTop + 6, {
-      width: col.width,
-      align: "center",
+    drawText(doc, col.label, col.x + (col.key === "item" ? 4 : 0), yTop + 7, {
+      width: col.width - (col.key === "item" ? 4 : 0),
+      align: col.align === "left" ? "left" : "center",
       font: "Helvetica-Bold",
       size: 8.5,
       color: COLORS.white,
     });
   });
 
-  drawRect(
-    doc,
-    left,
-    yTop + headerH,
-    right - left,
-    bottom - (yTop + headerH),
-    null,
-    COLORS.black,
-    1,
-  );
-
-  const verticals = [95, 340, 395, 483];
-  verticals.forEach((vx) =>
-    drawLine(doc, vx, yTop + headerH, vx, bottom, "#4A4A4A", 0.8),
-  );
-
   return {
     left,
     right,
-    top: yTop + headerH,
-    bottom,
     cols,
-    contentY: yTop + headerH + 4,
+    contentY: yTop + headerH + 8,
   };
 }
 
@@ -508,6 +644,7 @@ function measureItemBlock(doc, item, itemWidth) {
     doc.heightOfString(baseLine, {
       width: itemWidth,
       align: "left",
+      lineGap: 1,
     }),
   );
 
@@ -516,13 +653,14 @@ function measureItemBlock(doc, item, itemWidth) {
     ? doc.heightOfString(`Note: ${note}`, {
         width: itemWidth,
         align: "left",
+        lineGap: 1,
       }) + 8
     : 0;
 
   return {
     baseLine,
     note,
-    height: Math.max(18, baseH + noteH + 4),
+    height: Math.max(20, baseH + noteH + 7),
     baseH,
   };
 }
@@ -532,184 +670,339 @@ function drawItemRow(doc, rowIndex, item, currency, layout, y) {
   const itemCol = cols.find((c) => c.key === "item");
   const qtyCol = cols.find((c) => c.key === "qty");
   const priceCol = cols.find((c) => c.key === "price");
-  const receivedCol = cols.find((c) => c.key === "received");
+  const totalCol = cols.find((c) => c.key === "total");
 
   const measured = measureItemBlock(doc, item, itemCol.width - 8);
 
   if (rowIndex % 2 === 0) {
-    drawRect(
+    drawRoundedRect(
       doc,
-      layout.left + 1,
-      y - 2,
-      layout.right - layout.left - 2,
+      layout.left,
+      y - 3,
+      layout.right - layout.left,
       measured.height,
-      COLORS.softer,
+      6,
+      COLORS.soft,
       null,
     );
   }
 
-  drawText(doc, String(rowIndex + 1), cols[0].x + 2, y + 1, {
-    width: cols[0].width - 4,
+  drawText(doc, String(rowIndex + 1), cols[0].x, y + 2, {
+    width: cols[0].width,
     align: "center",
     font: "Helvetica",
     size: 9,
+    color: COLORS.text,
   });
 
-  drawText(doc, measured.baseLine, itemCol.x + 4, y + 1, {
-    width: itemCol.width - 8,
+  drawText(doc, measured.baseLine, itemCol.x, y + 1, {
+    width: itemCol.width,
     align: "left",
     font: "Helvetica",
     size: 9,
-    color: COLORS.black,
+    color: COLORS.ink,
     lineGap: 1,
   });
 
-  drawText(doc, String(safeNumber(item.qtyOrdered, 0)), qtyCol.x + 2, y + 1, {
-    width: qtyCol.width - 4,
+  drawText(doc, String(safeNumber(item.qtyOrdered, 0)), qtyCol.x, y + 2, {
+    width: qtyCol.width,
     align: "center",
     font: "Helvetica",
     size: 9,
+    color: COLORS.text,
   });
 
-  drawText(doc, formatMoney(item.unitCost, currency), priceCol.x + 2, y + 1, {
-    width: priceCol.width - 6,
+  drawText(doc, formatMoney(item.unitCost, currency), priceCol.x, y + 2, {
+    width: priceCol.width,
     align: "right",
     font: "Helvetica",
     size: 9,
+    color: COLORS.text,
   });
 
-  drawText(
-    doc,
-    String(safeNumber(item.qtyReceived, 0)),
-    receivedCol.x + 2,
-    y + 1,
-    {
-      width: receivedCol.width - 4,
-      align: "center",
-      font: "Helvetica",
-      size: 9,
-    },
-  );
+  drawText(doc, formatMoney(item.lineTotal, currency), totalCol.x, y + 2, {
+    width: totalCol.width,
+    align: "right",
+    font: "Helvetica-Bold",
+    size: 9.2,
+    color: COLORS.ink,
+  });
 
   if (measured.note) {
-    drawText(
-      doc,
-      `Note: ${measured.note}`,
-      itemCol.x + 4,
-      y + measured.baseH + 1,
-      {
-        width: itemCol.width - 8,
-        align: "left",
-        font: "Helvetica-Oblique",
-        size: 8,
-        color: COLORS.muted,
-      },
-    );
+    drawText(doc, `Note: ${measured.note}`, itemCol.x, y + measured.baseH + 2, {
+      width: itemCol.width,
+      align: "left",
+      font: "Helvetica-Oblique",
+      size: 8,
+      color: COLORS.muted,
+      lineGap: 1,
+    });
   }
 
   return measured.height;
 }
 
-function estimateFooterHeight(doc, purchaseOrder) {
-  let height = 0;
-  height += 34;
-  const notesText = purchaseOrder.notes || "-";
-  const notesHeight = doc.heightOfString(notesText, { width: 512 }) + 24;
-  height += Math.max(42, notesHeight);
-  height += 28;
-  height += 34;
-  height += 34;
-  return height;
+function drawTotalsCard(doc, purchaseOrder, yTop) {
+  const boxW = 214;
+  const boxH = 76;
+  const x = PAGE.width - PAGE.marginRight - boxW;
+
+  drawRoundedRect(
+    doc,
+    x,
+    yTop,
+    boxW,
+    boxH,
+    12,
+    COLORS.softCard,
+    COLORS.softLine,
+    1,
+  );
+
+  drawText(doc, "ORDER SUMMARY", x + 14, yTop + 11, {
+    width: boxW - 28,
+    font: "Helvetica-Bold",
+    size: 8.5,
+    color: COLORS.muted,
+  });
+
+  drawLine(
+    doc,
+    x + 14,
+    yTop + 26,
+    x + boxW - 14,
+    yTop + 26,
+    COLORS.softLine,
+    1,
+  );
+
+  drawText(doc, "Subtotal", x + 14, yTop + 35, {
+    width: 70,
+    font: "Helvetica",
+    size: 9,
+    color: COLORS.text,
+  });
+  drawText(
+    doc,
+    formatMoney(purchaseOrder.subtotalAmount, purchaseOrder.currency),
+    x + 90,
+    yTop + 34,
+    {
+      width: boxW - 104,
+      align: "right",
+      font: "Helvetica-Bold",
+      size: 9.5,
+      color: COLORS.ink,
+    },
+  );
+
+  drawText(doc, "Total", x + 14, yTop + 55, {
+    width: 70,
+    font: "Helvetica-Bold",
+    size: 10,
+    color: COLORS.ink,
+  });
+  drawText(
+    doc,
+    formatMoney(purchaseOrder.totalAmount, purchaseOrder.currency),
+    x + 90,
+    yTop + 53,
+    {
+      width: boxW - 104,
+      align: "right",
+      font: "Helvetica-Bold",
+      size: 11,
+      color: COLORS.ink,
+    },
+  );
+
+  return yTop + boxH;
 }
 
-function drawFooter(doc, purchaseOrder) {
-  const currency = normalizeCurrency(purchaseOrder.currency);
-  let y = 724;
+function drawOptionalNotes(doc, purchaseOrder, yTop) {
+  if (!hasMeaningfulNotes(purchaseOrder.notes)) {
+    return yTop;
+  }
 
-  valueLine(doc, "Status", safeText(purchaseOrder.status, "-"), 43, y, 145, 48);
-  valueLine(
+  const x = PAGE.marginLeft;
+  const w = PAGE.width - PAGE.marginLeft - PAGE.marginRight;
+
+  sectionTitle(doc, "Special Instructions", x, yTop, w);
+
+  const textY = yTop + 20;
+  const textH = doc.heightOfString(purchaseOrder.notes, {
+    width: w - 20,
+    align: "left",
+    lineGap: 2,
+  });
+  const boxH = Math.max(44, textH + 18);
+
+  drawRoundedRect(doc, x, textY, w, boxH, 10, COLORS.soft, COLORS.softLine, 1);
+
+  drawText(doc, purchaseOrder.notes, x + 10, textY + 9, {
+    width: w - 20,
+    font: "Helvetica",
+    size: 9.2,
+    color: COLORS.text,
+    lineGap: 2,
+  });
+
+  return textY + boxH + 16;
+}
+
+function drawApprovalAndSignature(doc, purchaseOrder, yTop) {
+  const x = PAGE.marginLeft;
+  const w = PAGE.width - PAGE.marginLeft - PAGE.marginRight;
+
+  sectionTitle(doc, "Approval & Authorization", x, yTop, w);
+
+  const topY = yTop + 22;
+  const gap = 16;
+  const leftW = 248;
+  const rightW = w - leftW - gap;
+  const leftX = x;
+  const rightX = x + leftW + gap;
+
+  drawRoundedRect(
     doc,
-    "Approved",
-    formatDate(purchaseOrder.approvedAt),
-    205,
-    y,
-    145,
-    62,
+    leftX,
+    topY,
+    leftW,
+    96,
+    12,
+    COLORS.soft,
+    COLORS.softLine,
+    1,
   );
-  valueLine(
+  drawRoundedRect(
     doc,
-    "Total Price",
-    formatMoney(purchaseOrder.totalAmount, currency),
-    375,
-    y,
-    180,
-    74,
+    rightX,
+    topY,
+    rightW,
+    96,
+    12,
+    COLORS.soft,
+    COLORS.softLine,
+    1,
   );
 
-  y += 34;
+  drawText(doc, "APPROVAL DETAILS", leftX + 12, topY + 10, {
+    width: leftW - 24,
+    font: "Helvetica-Bold",
+    size: 8.5,
+    color: COLORS.muted,
+  });
 
-  const notesUsed = multiField(
+  infoRow(
     doc,
-    "Notes",
-    purchaseOrder.notes || "-",
-    43,
-    y,
-    512,
-    34,
-  );
-  y += Math.max(38, notesUsed + 6);
-
-  sectionBar(doc, "Approval / Receiving Context", 43, y, 512, 18);
-  y += 28;
-
-  valueLine(
-    doc,
-    "Created By",
+    "Created",
     joinParts(
       [purchaseOrder.createdByName, purchaseOrder.createdByEmail],
       " • ",
       "-",
     ),
-    43,
-    y,
-    235,
-    78,
+    leftX + 12,
+    topY + 30,
+    leftW - 24,
+    54,
   );
-
-  valueLine(
+  infoRow(
     doc,
-    "Updated",
-    formatDate(purchaseOrder.updatedAt),
-    320,
-    y,
-    235,
-    56,
-  );
-  y += 34;
-
-  valueLine(
-    doc,
-    "Approved By",
+    "Approved",
     joinParts(
       [purchaseOrder.approvedByName, purchaseOrder.approvedByEmail],
       " • ",
       "-",
     ),
-    43,
-    y,
-    235,
-    90,
+    leftX + 12,
+    topY + 49,
+    leftW - 24,
+    54,
+  );
+  infoRow(
+    doc,
+    "Date",
+    formatDate(purchaseOrder.approvedAt),
+    leftX + 12,
+    topY + 68,
+    leftW - 24,
+    54,
   );
 
-  valueLine(
+  drawText(doc, "SIGNATURE & STAMP", rightX + 12, topY + 10, {
+    width: rightW - 24,
+    font: "Helvetica-Bold",
+    size: 8.5,
+    color: COLORS.muted,
+  });
+
+  drawText(doc, "Authorized signature", rightX + 12, topY + 34, {
+    width: 120,
+    font: "Helvetica",
+    size: 8,
+    color: COLORS.muted,
+  });
+
+  drawLine(
     doc,
-    "Expected",
-    formatDate(purchaseOrder.expectedAt),
-    320,
-    y,
-    235,
-    62,
+    rightX + 12,
+    topY + 64,
+    rightX + 128,
+    topY + 64,
+    COLORS.lineDark,
+    0.9,
   );
+
+  drawText(doc, "Sign above", rightX + 12, topY + 68, {
+    width: 120,
+    font: "Helvetica-Oblique",
+    size: 7.5,
+    color: COLORS.lightText,
+  });
+
+  const stampBoxX = rightX + rightW - 112;
+  const stampBoxY = topY + 28;
+  const stampBoxW = 88;
+  const stampBoxH = 46;
+
+  drawRoundedRect(
+    doc,
+    stampBoxX,
+    stampBoxY,
+    stampBoxW,
+    stampBoxH,
+    10,
+    null,
+    COLORS.line,
+    1,
+  );
+
+  drawText(doc, "Official stamp", stampBoxX, stampBoxY + 16, {
+    width: stampBoxW,
+    align: "center",
+    font: "Helvetica-Oblique",
+    size: 8.5,
+    color: COLORS.muted,
+  });
+
+  return topY + 96;
+}
+
+function measureEndingSectionHeight(doc, purchaseOrder) {
+  let h = 0;
+  h += 76 + 18;
+
+  if (hasMeaningfulNotes(purchaseOrder.notes)) {
+    const notesH = doc.heightOfString(purchaseOrder.notes, {
+      width: PAGE.width - PAGE.marginLeft - PAGE.marginRight - 20,
+      align: "left",
+      lineGap: 2,
+    });
+    h += 20 + Math.max(44, notesH + 18) + 16;
+  }
+
+  h += 22 + 96;
+  return h;
 }
 
 function generatePurchaseOrderPdfBuffer({ purchaseOrder, items }) {
@@ -727,111 +1020,101 @@ function generatePurchaseOrderPdfBuffer({ purchaseOrder, items }) {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
-    drawHeader(doc, purchaseOrder, false);
-    const firstPageDetailsBottom = drawTopDetails(doc, purchaseOrder);
-    const tableTop = Math.max(272, firstPageDetailsBottom + 8);
+    const bottomLimit = PAGE.height - PAGE.marginBottom;
+    const endingHeight = measureEndingSectionHeight(doc, purchaseOrder);
 
-    const footerHeight = estimateFooterHeight(doc, purchaseOrder);
-    const footerReserve = footerHeight + 16;
+    let bodyStart = drawHeader(doc, purchaseOrder, false);
+    let nextY = drawSupplierAndDelivery(doc, purchaseOrder, bodyStart);
 
-    const measured = items.map((item) => measureItemBlock(doc, item, 237));
-    const firstPageRows = [];
-    let used = 0;
-    const firstPageLimit = 695 - footerReserve;
-    const availableFirstPage = firstPageLimit - (tableTop + 26);
-
-    for (let i = 0; i < measured.length; i += 1) {
-      if (used + measured[i].height > availableFirstPage) break;
-      firstPageRows.push(items[i]);
-      used += measured[i].height;
-    }
-
-    drawText(doc, "ORDER DETAILS", 208, tableTop - 22, {
-      width: 180,
-      align: "center",
+    drawText(doc, "ORDER LINES", PAGE.marginLeft, nextY, {
+      width: PAGE.width - PAGE.marginLeft - PAGE.marginRight,
+      align: "left",
       font: "Helvetica-Bold",
-      size: 15,
+      size: 11,
+      color: COLORS.ink,
     });
 
-    const firstLayout = drawTableSkeleton(doc, tableTop);
-    let currentY = firstLayout.contentY;
+    let layout = drawTableHeader(doc, nextY + 18);
+    let currentY = layout.contentY;
+    let globalRowIndex = 0;
 
-    firstPageRows.forEach((item, idx) => {
-      const h = drawItemRow(
+    for (let i = 0; i < items.length; i += 1) {
+      const rowHeight = measureItemBlock(doc, items[i], 266).height;
+      const isLastItem = i === items.length - 1;
+      const reserve = isLastItem ? endingHeight + 16 : 0;
+
+      if (currentY + rowHeight + reserve > bottomLimit) {
+        doc.addPage();
+
+        bodyStart = drawHeader(doc, purchaseOrder, true);
+
+        drawText(doc, "ORDER LINES", PAGE.marginLeft, bodyStart, {
+          width: PAGE.width - PAGE.marginLeft - PAGE.marginRight,
+          align: "left",
+          font: "Helvetica-Bold",
+          size: 11,
+          color: COLORS.ink,
+        });
+
+        layout = drawTableHeader(doc, bodyStart + 18);
+        currentY = layout.contentY;
+      }
+
+      const used = drawItemRow(
         doc,
-        idx,
-        item,
+        globalRowIndex,
+        items[i],
         purchaseOrder.currency,
-        firstLayout,
+        layout,
         currentY,
       );
-      currentY += h;
-    });
+      currentY += used + 4;
+      globalRowIndex += 1;
+    }
 
-    const remainingItems = items.slice(firstPageRows.length);
-    let absoluteOffset = firstPageRows.length;
+    if (!items.length) {
+      if (currentY + endingHeight > bottomLimit) {
+        doc.addPage();
+        bodyStart = drawHeader(doc, purchaseOrder, true);
+        currentY = bodyStart + 8;
+      }
 
-    while (remainingItems.length) {
+      drawRoundedRect(
+        doc,
+        PAGE.marginLeft,
+        currentY,
+        PAGE.width - PAGE.marginLeft - PAGE.marginRight,
+        44,
+        10,
+        COLORS.soft,
+        COLORS.softLine,
+        1,
+      );
+      drawText(
+        doc,
+        "No items on this purchase order.",
+        PAGE.marginLeft,
+        currentY + 14,
+        {
+          width: PAGE.width - PAGE.marginLeft - PAGE.marginRight,
+          align: "center",
+          font: "Helvetica-Oblique",
+          size: 10,
+          color: COLORS.muted,
+        },
+      );
+      currentY += 56;
+    }
+
+    if (currentY + endingHeight > bottomLimit) {
       doc.addPage();
-      drawHeader(doc, purchaseOrder, true);
-
-      drawText(doc, "ORDER DETAILS", 208, 108, {
-        width: 180,
-        align: "center",
-        font: "Helvetica-Bold",
-        size: 15,
-      });
-
-      const layout = drawTableSkeleton(doc, 128);
-      let y = layout.contentY;
-      let taken = 0;
-
-      while (taken < remainingItems.length) {
-        const block = measureItemBlock(doc, remainingItems[taken], 237);
-        const isLastBatchPage = taken === remainingItems.length - 1;
-        const pageLimit = isLastBatchPage ? 705 - footerReserve : 705;
-
-        if (y + block.height > pageLimit) break;
-
-        const h = drawItemRow(
-          doc,
-          absoluteOffset + taken,
-          remainingItems[taken],
-          purchaseOrder.currency,
-          layout,
-          y,
-        );
-        y += h;
-        taken += 1;
-      }
-
-      if (taken === 0) {
-        const h = drawItemRow(
-          doc,
-          absoluteOffset,
-          remainingItems[0],
-          purchaseOrder.currency,
-          layout,
-          y,
-        );
-        y += h;
-        taken = 1;
-      }
-
-      remainingItems.splice(0, taken);
-      absoluteOffset += taken;
-
-      if (!remainingItems.length) {
-        drawFooter(doc, purchaseOrder);
-      }
+      bodyStart = drawHeader(doc, purchaseOrder, true);
+      currentY = bodyStart + 6;
     }
 
-    if (
-      !items.length ||
-      (!remainingItems.length && firstPageRows.length === items.length)
-    ) {
-      drawFooter(doc, purchaseOrder);
-    }
+    currentY = drawTotalsCard(doc, purchaseOrder, currentY + 8) + 14;
+    currentY = drawOptionalNotes(doc, purchaseOrder, currentY);
+    drawApprovalAndSignature(doc, purchaseOrder, currentY);
 
     doc.end();
   });

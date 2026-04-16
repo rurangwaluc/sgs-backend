@@ -61,9 +61,20 @@ function parseDateOrNull(v) {
 function toDateOrNull(value) {
   if (value == null || value === "") return null;
 
-  const date = value instanceof Date ? value : new Date(value);
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      const err = new Error("Invalid paidAt");
+      err.code = "BAD_DATE";
+      err.statusCode = 400;
+      throw err;
+    }
+    return value;
+  }
+
+  const date = new Date(String(value));
   if (Number.isNaN(date.getTime())) {
-    const err = new Error("Invalid date value");
+    const err = new Error("Invalid paidAt");
+    err.code = "BAD_DATE";
     err.statusCode = 400;
     throw err;
   }
@@ -116,6 +127,27 @@ function computeTotalsFromItems(items) {
   );
 
   return { totalAmount, lines };
+}
+
+function formatYmd(dateLike = new Date()) {
+  const d = dateLike instanceof Date ? dateLike : new Date(dateLike);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}${mm}${dd}`;
+}
+
+function padSeq(n, width = 4) {
+  return String(Math.max(1, Number(n) || 1)).padStart(width, "0");
+}
+
+function normalizeCodePart(value, fallback = "MAIN") {
+  const s = String(value || fallback)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return s || fallback;
 }
 
 async function getLocationOrThrow(tx, locationId) {
@@ -307,6 +339,62 @@ async function getOwnerSupplierBillById(tx, billId) {
   };
 }
 
+async function generateNextSupplierBillNo(
+  tx,
+  { locationId, issuedDate = null },
+) {
+  const location = await getLocationOrThrow(tx, locationId);
+  const datePart = formatYmd(issuedDate || new Date());
+  const locationCode = normalizeCodePart(
+    location.code || location.name || "MAIN",
+  );
+  const prefix = `BILL-${locationCode}-${datePart}-`;
+
+  const rows = await tx.execute(sql`
+    SELECT sb.bill_no as "billNo"
+    FROM supplier_bills sb
+    WHERE sb.location_id = ${Number(locationId)}
+      AND sb.bill_no ILIKE ${`${prefix}%`}
+    ORDER BY sb.id DESC
+    LIMIT 500
+  `);
+
+  const existing = rows?.rows || rows || [];
+  let maxSeq = 0;
+
+  for (const row of existing) {
+    const billNo = String(row?.billNo || "");
+    const match = billNo.match(/(\d+)$/);
+    if (!match) continue;
+    const seq = Number(match[1]);
+    if (Number.isFinite(seq) && seq > maxSeq) {
+      maxSeq = seq;
+    }
+  }
+
+  return `${prefix}${padSeq(maxSeq + 1, 4)}`;
+}
+
+async function generateNextSupplierBillPaymentReference(
+  tx,
+  { billId, method = "BANK", billNo = null },
+) {
+  const methodCode = normalizeCodePart(method || "BANK", "BANK");
+  const baseBillNo = normalizeCodePart(
+    billNo || `BILL-${billId}`,
+    `BILL-${billId}`,
+  );
+
+  const rows = await tx.execute(sql`
+    SELECT COUNT(*)::int as count
+    FROM supplier_bill_payments
+    WHERE bill_id = ${Number(billId)}
+  `);
+
+  const existingCount = Number((rows?.rows || rows || [])[0]?.count || 0);
+  return `${methodCode}-PAY-${baseBillNo}-${padSeq(existingCount + 1, 3)}`;
+}
+
 async function createOwnerSupplierBill({
   ownerUserId,
   ownerLocationId,
@@ -373,18 +461,26 @@ async function createOwnerSupplierBill({
       supplier?.defaultCurrency || "RWF",
     );
 
+    const issuedDateValue = toDateOrNull(data.issuedDate) || new Date();
+    const autoBillNo = await generateNextSupplierBillNo(tx, {
+      locationId,
+      issuedDate: issuedDateValue,
+    });
+
+    const finalBillNo = cleanStr(data.billNo) || autoBillNo;
+
     const [created] = await tx
       .insert(supplierBills)
       .values({
         locationId,
         supplierId,
-        billNo: cleanStr(data.billNo),
+        billNo: finalBillNo,
         currency,
         totalAmount,
         paidAmount: 0,
         status,
-        issuedDate: parseDateOrNull(data.issuedDate),
-        dueDate: parseDateOrNull(data.dueDate),
+        issuedDate: issuedDateValue,
+        dueDate: toDateOrNull(data.dueDate),
         note: cleanStr(data.note),
         createdByUserId: ownerUserId,
         createdAt: sql`now()`,
@@ -426,6 +522,7 @@ async function createOwnerSupplierBill({
         totalAmount,
         currency,
         status,
+        billNo: finalBillNo,
       },
       tx,
     });
@@ -507,11 +604,11 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
     }
 
     if (data.issuedDate !== undefined) {
-      patch.issuedDate = parseDateOrNull(data.issuedDate);
+      patch.issuedDate = toDateOrNull(data.issuedDate);
     }
 
     if (data.dueDate !== undefined) {
-      patch.dueDate = parseDateOrNull(data.dueDate);
+      patch.dueDate = toDateOrNull(data.dueDate);
     }
 
     if (data.note !== undefined) {
@@ -579,7 +676,7 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
     patch.status =
       requestedStatus === "DRAFT" && currentPaid <= 0 ? "DRAFT" : derivedStatus;
 
-    const [updated] = await tx
+    await tx
       .update(supplierBills)
       .set({
         ...(patch.supplierId !== undefined
@@ -601,11 +698,7 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
         status: patch.status,
         updatedAt: sql`now()`,
       })
-      .where(eq(supplierBills.id, id))
-      .returning({
-        id: supplierBills.id,
-        locationId: supplierBills.locationId,
-      });
+      .where(eq(supplierBills.id, id));
 
     if (recomputedLines) {
       await tx
@@ -627,7 +720,7 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
     }
 
     await safeLogAudit({
-      locationId: updated?.locationId ?? existing.locationId,
+      locationId: patch.locationId ?? existing.locationId,
       userId: ownerUserId,
       action: AUDIT.OWNER_SUPPLIER_BILL_UPDATE,
       entity: "supplier_bill",
@@ -637,6 +730,7 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
         supplierId: patch.supplierId ?? existing.supplierId,
         totalAmount: patch.totalAmount ?? existing.totalAmount,
         status: patch.status,
+        billNo: patch.billNo ?? existing.billNo,
       },
       tx,
     });
@@ -702,6 +796,8 @@ async function addOwnerSupplierBillPayment({ ownerUserId, billId, payload }) {
       throw err;
     }
 
+    const paidAt = toDateOrNull(data.paidAt) || new Date();
+
     const [payment] = await tx
       .insert(supplierBillPayments)
       .values({
@@ -710,7 +806,7 @@ async function addOwnerSupplierBillPayment({ ownerUserId, billId, payload }) {
         method: normalizeMethod(data.method, "BANK"),
         reference: cleanStr(data.reference),
         note: cleanStr(data.note),
-        paidAt: toDateOrNull(data.paidAt) || new Date(),
+        paidAt,
         createdByUserId: ownerUserId,
         createdAt: sql`now()`,
       })
