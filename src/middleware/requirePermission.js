@@ -5,7 +5,6 @@ const { can } = require("../permissions/policy");
 function normalizeRole(role) {
   return String(role || "")
     .trim()
-    .toUpperCase()
     .replace(/[\s-]+/g, "_");
 }
 
@@ -45,9 +44,7 @@ function requireAnyPermission(actions = []) {
     const actingAsRole = normalizeRole(request.user.actingAsRole);
 
     const ok = actions.some(
-      (a) =>
-        can(realRole, a) ||
-        (!!actingAsRole && actingAsRole !== realRole && can(actingAsRole, a)),
+      (a) => can(realRole, a) || (!!actingAsRole && can(actingAsRole, a)),
     );
 
     if (ok) return;

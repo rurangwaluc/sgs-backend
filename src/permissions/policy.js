@@ -23,7 +23,6 @@ const REVERSE_ALIASES = (() => {
 })();
 
 const policy = {
-  // Owner inherits every action that exists — including all future additions.
   [ROLES.OWNER]: [...ALL_ACTION_STRINGS],
 
   [ROLES.ADMIN]: [
@@ -214,8 +213,6 @@ const policy = {
     ACTIONS.CUSTOMER_VIEW,
   ],
 
-  // Store keeper receives goods against purchase orders but does not create,
-  // approve, or cancel them. They see the PO list so they know what stock is incoming.
   [ROLES.STORE_KEEPER]: [
     ACTIONS.AUTH_ME,
     ACTIONS.MESSAGE_CREATE,
@@ -331,9 +328,41 @@ const policy = {
   ],
 };
 
+function normalizeRoleKey(role) {
+  return String(role || "")
+    .trim()
+    .replace(/[\s-]+/g, "_");
+}
+
+function getAllowedActionsForRole(role) {
+  const raw = normalizeRoleKey(role);
+  if (!raw) return [];
+
+  const candidates = [
+    raw,
+    raw.toUpperCase(),
+    raw.toLowerCase(),
+    raw
+      .split("_")
+      .map((part) => part.toUpperCase())
+      .join("_"),
+  ];
+
+  for (const key of candidates) {
+    if (Array.isArray(policy[key])) return policy[key];
+  }
+
+  const matchedKey = Object.keys(policy).find(
+    (key) => normalizeRoleKey(key).toLowerCase() === raw.toLowerCase(),
+  );
+
+  return matchedKey ? policy[matchedKey] || [] : [];
+}
+
 function can(role, action) {
-  const allowed = policy[role] || [];
   if (!action) return false;
+
+  const allowed = getAllowedActionsForRole(role);
 
   if (allowed.includes(action)) return true;
 
