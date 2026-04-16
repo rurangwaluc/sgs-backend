@@ -79,6 +79,13 @@ async function createSale(request, reply) {
       });
     }
 
+    if (e.code === "PRODUCT_INACTIVE") {
+      return reply.status(409).send({
+        error: "Product is inactive",
+        debug: e.debug,
+      });
+    }
+
     if (e.code === "BAD_QTY") {
       return reply.status(400).send({
         error: "Invalid qty",
@@ -93,9 +100,32 @@ async function createSale(request, reply) {
       });
     }
 
-    if (e.code === "PRICE_TOO_HIGH") {
+    if (e.code === "PRICE_BELOW_SELLING_NOT_ALLOWED") {
       return reply.status(409).send({
-        error: "Unit price cannot be above selling price",
+        error: "Use discount instead of lowering the product price",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "PRICE_UPLIFT_NOT_ALLOWED") {
+      return reply.status(403).send({
+        error:
+          "You are not allowed to increase sale price above the official product price",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "PRICE_UPLIFT_LIMIT_EXCEEDED") {
+      return reply.status(409).send({
+        error: "Extra charge exceeds the allowed uplift limit",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "PRICE_ADJUSTMENT_REASON_REQUIRED") {
+      return reply.status(400).send({
+        error:
+          "Price adjustment reason is required when seller adds extra charge",
         debug: e.debug,
       });
     }

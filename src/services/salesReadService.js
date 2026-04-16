@@ -18,7 +18,7 @@ function toInt(value, fallback = 0) {
 }
 
 /**
- * Fetch a single sale by ID with credit info and items preview
+ * Fetch a single sale by ID with credit info and full item pricing breakdown
  */
 async function getSaleById({ locationId, saleId }) {
   const saleRes = await db.execute(sql`
@@ -41,10 +41,8 @@ async function getSaleById({ locationId, saleId }) {
       c.tin as "customerTin",
       c.address as "customerAddress",
 
-      -- Payments sum
       COALESCE(p.sum_amount, 0)::int as "amountPaid",
 
-      -- Credit info
       cr.id as "creditId",
       cr.status as "creditStatus",
       cr.principal_amount::bigint as "creditPrincipalAmount",
@@ -82,7 +80,6 @@ async function getSaleById({ locationId, saleId }) {
   const saleRow = (saleRes.rows || saleRes || [])[0];
   if (!saleRow) return null;
 
-  // Sale items
   const itemsRes = await db.execute(sql`
     SELECT
       si.id,
@@ -90,10 +87,21 @@ async function getSaleById({ locationId, saleId }) {
       p.name as "productName",
       p.sku as "sku",
       si.qty,
+      si.base_unit_price as "baseUnitPrice",
+      si.extra_charge_per_unit as "extraChargePerUnit",
       si.unit_price as "unitPrice",
-      si.line_total as "lineTotal"
+      si.line_total as "lineTotal",
+      si.price_adjustment_reason as "priceAdjustmentReason",
+      si.price_adjustment_type as "priceAdjustmentType",
+      si.price_adjusted_by_user_id as "priceAdjustedByUserId",
+      adj.name as "priceAdjustedByName",
+      si.price_adjusted_at as "priceAdjustedAt"
     FROM sale_items si
-    LEFT JOIN products p ON p.id = si.product_id AND p.location_id = ${locationId}
+    LEFT JOIN products p
+      ON p.id = si.product_id
+     AND p.location_id = ${locationId}
+    LEFT JOIN users adj
+      ON adj.id = si.price_adjusted_by_user_id
     WHERE si.sale_id = ${saleId}
     ORDER BY si.id ASC
   `);
@@ -104,8 +112,17 @@ async function getSaleById({ locationId, saleId }) {
     productName: it.productName ?? null,
     sku: it.sku ?? null,
     qty: toInt(it.qty, 0),
+
+    baseUnitPrice: toInt(it.baseUnitPrice, 0),
+    extraChargePerUnit: toInt(it.extraChargePerUnit, 0),
     unitPrice: toInt(it.unitPrice, 0),
     lineTotal: toInt(it.lineTotal, 0),
+
+    priceAdjustmentReason: it.priceAdjustmentReason ?? null,
+    priceAdjustmentType: it.priceAdjustmentType ?? null,
+    priceAdjustedByUserId: toInt(it.priceAdjustedByUserId, null),
+    priceAdjustedByName: it.priceAdjustedByName ?? null,
+    priceAdjustedAt: it.priceAdjustedAt ?? null,
   }));
 
   const location = toLocationObj(saleRow);
@@ -224,9 +241,19 @@ async function listSales({ locationId, filters }) {
         SELECT
           COALESCE(pr.name, CONCAT('Product #', si.product_id::text)) as "productName",
           si.qty::int as "qty",
-          pr.sku as "sku"
+          pr.sku as "sku",
+          si.base_unit_price::bigint as "baseUnitPrice",
+          si.extra_charge_per_unit::bigint as "extraChargePerUnit",
+          si.unit_price::bigint as "unitPrice",
+          si.line_total::bigint as "lineTotal",
+          si.price_adjustment_reason as "priceAdjustmentReason",
+          si.price_adjustment_type as "priceAdjustmentType",
+          si.price_adjusted_by_user_id as "priceAdjustedByUserId",
+          si.price_adjusted_at as "priceAdjustedAt"
         FROM sale_items si
-        LEFT JOIN products pr ON pr.id = si.product_id AND pr.location_id = s.location_id
+        LEFT JOIN products pr
+          ON pr.id = si.product_id
+         AND pr.location_id = s.location_id
         WHERE si.sale_id = s.id
         ORDER BY si.id ASC
         LIMIT 3
@@ -275,7 +302,21 @@ async function listSales({ locationId, filters }) {
         }
       : null;
 
-    const itemsPreview = Array.isArray(r.itemsPreview) ? r.itemsPreview : [];
+    const itemsPreview = Array.isArray(r.itemsPreview)
+      ? r.itemsPreview.map((item) => ({
+          productName: item?.productName ?? null,
+          qty: toInt(item?.qty, 0),
+          sku: item?.sku ?? null,
+          baseUnitPrice: toInt(item?.baseUnitPrice, 0),
+          extraChargePerUnit: toInt(item?.extraChargePerUnit, 0),
+          unitPrice: toInt(item?.unitPrice, 0),
+          lineTotal: toInt(item?.lineTotal, 0),
+          priceAdjustmentReason: item?.priceAdjustmentReason ?? null,
+          priceAdjustmentType: item?.priceAdjustmentType ?? null,
+          priceAdjustedByUserId: toInt(item?.priceAdjustedByUserId, null),
+          priceAdjustedAt: item?.priceAdjustedAt ?? null,
+        }))
+      : [];
 
     const {
       locationName,

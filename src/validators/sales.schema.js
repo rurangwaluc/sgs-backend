@@ -6,10 +6,13 @@ const { z } = require("zod");
  * - Storekeeper fulfills sale -> deduct inventory -> status becomes FULFILLED
  * - Seller marks PAID/PENDING (finalize) -> status changes
  *
+ * Controlled seller uplift:
+ * - Seller may add extraChargePerUnit above official product selling price
+ * - Backend remains source of truth for official/base unit price
+ * - If extraChargePerUnit > 0, priceAdjustmentReason is required
+ *
  * Discounts:
- * - Seller CANNOT increase unit price above product sellingPrice
- * - Seller discountPercent cannot exceed product.maxDiscountPercent
- * - Sale-level discountPercent must obey strictest maxDiscountPercent among items
+ * - Existing discount rules remain intact until service logic is updated.
  */
 
 const createSaleSchema = z.object({
@@ -23,20 +26,52 @@ const createSaleSchema = z.object({
 
   items: z
     .array(
-      z.object({
-        productId: z.number().int().positive(),
-        qty: z.number().int().positive(),
-        unitPrice: z.coerce.number().int().min(0).optional(),
-        discountPercent: z.coerce.number().min(0).max(100).optional(),
-        discountAmount: z.coerce.number().int().min(0).optional(),
-      }),
+      z
+        .object({
+          productId: z.number().int().positive(),
+          qty: z.number().int().positive(),
+
+          /**
+           * Keep existing compatibility.
+           * Service layer should stop trusting this as the official source of truth.
+           * Later we can remove it entirely after frontend migration is complete.
+           */
+          unitPrice: z.coerce.number().int().min(0).optional(),
+
+          /**
+           * New controlled seller uplift.
+           * This is added on top of official/base product price.
+           */
+          extraChargePerUnit: z.coerce.number().int().min(0).optional(),
+
+          /**
+           * Required when extraChargePerUnit > 0
+           */
+          priceAdjustmentReason: z.string().trim().min(3).max(300).optional(),
+
+          discountPercent: z.coerce.number().min(0).max(100).optional(),
+          discountAmount: z.coerce.number().int().min(0).optional(),
+        })
+        .superRefine((item, ctx) => {
+          const extra = Number(item.extraChargePerUnit || 0);
+
+          if (extra > 0 && !item.priceAdjustmentReason) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["priceAdjustmentReason"],
+              message:
+                "priceAdjustmentReason is required when extraChargePerUnit is greater than 0",
+            });
+          }
+        }),
     )
     .min(1),
 });
 
 /**
  * Seller finalizes AFTER fulfill
- * (we keep body same as before)
+ * - PAID => paymentMethod required
+ * - PENDING => paymentMethod forbidden
  */
 const markSaleSchema = z
   .object({
@@ -44,9 +79,6 @@ const markSaleSchema = z
     paymentMethod: z.enum(["CASH", "MOMO", "BANK"]).optional(),
   })
   .superRefine((data, ctx) => {
-    // ✅ contract:
-    // - PAID => paymentMethod is REQUIRED
-    // - PENDING => paymentMethod MUST NOT be sent (optional, but we reject if present)
     if (data.status === "PAID") {
       if (!data.paymentMethod) {
         ctx.addIssue({
@@ -72,10 +104,6 @@ const cancelSaleSchema = z.object({
   reason: z.string().min(3),
 });
 
-/**
- * Storekeeper fulfills a DRAFT sale (deduct inventory)
- * Body kept simple (optional note)
- */
 const fulfillSaleSchema = z.object({
   note: z.string().max(200).nullable().optional(),
 });

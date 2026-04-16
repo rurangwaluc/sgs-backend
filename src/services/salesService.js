@@ -6,7 +6,7 @@ const { products } = require("../db/schema/products.schema");
 const { inventoryBalances } = require("../db/schema/inventory.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { customers } = require("../db/schema/customers.schema");
-const { eq, and, inArray, desc } = require("drizzle-orm");
+const { eq, and, inArray } = require("drizzle-orm");
 
 /**
  * BCS sales flow:
@@ -19,12 +19,21 @@ const { eq, and, inArray, desc } = require("drizzle-orm");
  * Statuses:
  * - DRAFT
  * - FULFILLED
- * - PENDING                // credit lifecycle status on sale side
- * - APPROVED               // approved credit
- * - PARTIALLY_PAID         // future-ready credit repayment state
+ * - PENDING
+ * - APPROVED
+ * - PARTIALLY_PAID
  * - AWAITING_PAYMENT_RECORD
  * - COMPLETED
  * - CANCELLED
+ *
+ * Controlled seller uplift:
+ * - Official manager/system selling price is always fetched from products.sellingPrice
+ * - Seller may add extraChargePerUnit (>= 0)
+ * - Backend computes final unitPrice = baseUnitPrice + extraChargePerUnit
+ * - If extraChargePerUnit > 0, priceAdjustmentReason is required
+ * - We preserve audit truth in sale_items:
+ *   baseUnitPrice, extraChargePerUnit, unitPrice, priceAdjustmentReason,
+ *   priceAdjustmentType, priceAdjustedByUserId, priceAdjustedAt
  */
 
 const PAYMENT_METHODS = new Set(["CASH", "MOMO", "CARD", "BANK", "OTHER"]);
@@ -43,6 +52,11 @@ function toPct(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
   return x;
+}
+
+function safeText(v, max = 300) {
+  if (v == null) return "";
+  return String(v).trim().slice(0, max);
 }
 
 function computeLine({ qty, unitPrice, discountPercent, discountAmount }) {
@@ -150,10 +164,6 @@ async function createSale({
   }
 
   return db.transaction(async (tx) => {
-    // IMPORTANT:
-    // Select ONLY fields needed for sales creation.
-    // Do not use .select().from(products) here, because the DB table may lag
-    // behind the schema on unrelated catalog fields like gender/season.
     const prodRows = await tx
       .select({
         id: products.id,
@@ -200,35 +210,31 @@ async function createSale({
         throw err;
       }
 
-      const sellingPrice = toInt(prod.sellingPrice ?? 0);
-
-      // Seller must not control unit price.
-      // We always use the official selling price from products.
-      const requestedUnit =
-        it?.unitPrice == null ? sellingPrice : toInt(it.unitPrice);
-
-      if (requestedUnit < 0) {
-        const err = new Error("Invalid unit price");
-        err.code = "BAD_UNIT_PRICE";
-        err.debug = { productId: pid, requestedUnit };
+      const baseUnitPrice = toInt(prod.sellingPrice ?? 0);
+      if (baseUnitPrice < 0) {
+        const err = new Error("Invalid product selling price");
+        err.code = "BAD_PRODUCT_PRICE";
+        err.debug = { productId: pid, sellingPrice: prod.sellingPrice };
         throw err;
       }
 
-      if (requestedUnit > sellingPrice) {
-        const err = new Error("Unit price cannot be above selling price");
-        err.code = "PRICE_TOO_HIGH";
-        err.debug = { productId: pid, sellingPrice, requestedUnit };
-        throw err;
-      }
+      const extraChargePerUnit = Math.max(
+        0,
+        toInt(it?.extraChargePerUnit ?? 0),
+      );
 
-      if (requestedUnit < sellingPrice) {
+      const priceAdjustmentReason = safeText(it?.priceAdjustmentReason, 300);
+
+      if (extraChargePerUnit > 0 && !priceAdjustmentReason) {
         const err = new Error(
-          "Use discount instead of changing the product price",
+          "priceAdjustmentReason is required when extra charge is added",
         );
-        err.code = "PRICE_BELOW_SELLING_NOT_ALLOWED";
-        err.debug = { productId: pid, sellingPrice, requestedUnit };
+        err.code = "MISSING_PRICE_ADJUSTMENT_REASON";
+        err.debug = { productId: pid, extraChargePerUnit };
         throw err;
       }
+
+      const finalUnitPrice = baseUnitPrice + extraChargePerUnit;
 
       const itemMax = clamp(toPct(prod.maxDiscountPercent ?? 0), 0, 100);
       strictMaxDisc = Math.min(strictMaxDisc, itemMax);
@@ -255,7 +261,7 @@ async function createSale({
 
       const line = computeLine({
         qty,
-        unitPrice: sellingPrice,
+        unitPrice: finalUnitPrice,
         discountPercent: itemPct,
         discountAmount: it?.discountAmount,
       });
@@ -272,8 +278,16 @@ async function createSale({
       lines.push({
         productId: pid,
         qty: line.qty,
+
+        baseUnitPrice,
+        extraChargePerUnit,
         unitPrice: line.unitPrice,
         lineTotal: line.lineTotal,
+
+        priceAdjustmentReason: priceAdjustmentReason || null,
+        priceAdjustmentType: extraChargePerUnit > 0 ? "SELLER_UPLIFT" : "NONE",
+        priceAdjustedByUserId: extraChargePerUnit > 0 ? sellId : null,
+        priceAdjustedAt: extraChargePerUnit > 0 ? new Date() : null,
       });
     }
 
@@ -400,8 +414,16 @@ async function createSale({
         saleId: sale.id,
         productId: ln.productId,
         qty: ln.qty,
+
+        baseUnitPrice: ln.baseUnitPrice,
+        extraChargePerUnit: ln.extraChargePerUnit,
         unitPrice: ln.unitPrice,
         lineTotal: ln.lineTotal,
+
+        priceAdjustmentReason: ln.priceAdjustmentReason,
+        priceAdjustmentType: ln.priceAdjustmentType,
+        priceAdjustedByUserId: ln.priceAdjustedByUserId,
+        priceAdjustedAt: ln.priceAdjustedAt,
       });
     }
 
@@ -413,6 +435,21 @@ async function createSale({
       entityId: sale.id,
       description: `Sale #${sale.id} created (DRAFT), total=${saleDisc.totalAmount}`,
     });
+
+    const upliftedLines = lines.filter(
+      (ln) => Number(ln.extraChargePerUnit || 0) > 0,
+    );
+
+    if (upliftedLines.length > 0) {
+      await tx.insert(auditLogs).values({
+        locationId: locId,
+        userId: sellId,
+        action: "SALE_PRICE_UPLIFT",
+        entity: "sale",
+        entityId: sale.id,
+        description: `Sale #${sale.id} created with seller uplift on ${upliftedLines.length} line(s)`,
+      });
+    }
 
     await notificationService.notifyRoles({
       locationId: locId,

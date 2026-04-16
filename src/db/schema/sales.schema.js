@@ -21,10 +21,8 @@ const sales = pgTable("sales", {
 
   status: varchar("status", { length: 40 }).notNull().default("DRAFT"),
 
-  // ✅ FIX: bigint (matches DB)
   totalAmount: bigint("total_amount", { mode: "number" }).notNull().default(0),
 
-  // seller-selected method (optional)
   paymentMethod: varchar("payment_method", { length: 30 }),
 
   note: text("note"),
