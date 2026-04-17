@@ -3,6 +3,8 @@
 const PDFDocument = require("pdfkit");
 const { db } = require("../config/db");
 const { sql } = require("drizzle-orm");
+const fs = require("fs");
+const path = require("path");
 
 function toInt(value, fallback = null) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -61,6 +63,71 @@ function hasMeaningfulNotes(value) {
   const low = s.toLowerCase();
   if (["test", "ok", "none", "n/a", "-", "."].includes(low)) return false;
   return s.length >= 4;
+}
+
+function isHttpUrl(value) {
+  const s = safeTextSoft(value, "");
+  return s.startsWith("http://") || s.startsWith("https://");
+}
+
+function isDataUrl(value) {
+  const s = safeTextSoft(value, "");
+  return s.startsWith("data:image/");
+}
+
+function resolveLocalAssetPath(value) {
+  const raw = safeTextSoft(value, "");
+  if (!raw) return "";
+
+  if (path.isAbsolute(raw) && fs.existsSync(raw)) {
+    return raw;
+  }
+
+  const normalized = raw.replace(/^\/+/, "");
+
+  const candidates = [
+    path.resolve(process.cwd(), raw),
+    path.resolve(process.cwd(), normalized),
+    path.resolve(process.cwd(), "public", normalized),
+    path.resolve(process.cwd(), "..", normalized),
+    path.resolve(process.cwd(), "..", "public", normalized),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+
+  return "";
+}
+
+async function loadLogoBuffer(logoUrl) {
+  const raw = safeTextSoft(logoUrl, "");
+  if (!raw) return null;
+
+  try {
+    if (isDataUrl(raw)) {
+      const commaIndex = raw.indexOf(",");
+      if (commaIndex === -1) return null;
+      const base64 = raw.slice(commaIndex + 1);
+      return Buffer.from(base64, "base64");
+    }
+
+    if (isHttpUrl(raw)) {
+      const res = await fetch(raw);
+      if (!res.ok) return null;
+      const arr = await res.arrayBuffer();
+      return Buffer.from(arr);
+    }
+
+    const localPath = resolveLocalAssetPath(raw);
+    if (localPath) {
+      return fs.readFileSync(localPath);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 async function getPurchaseOrderPrintableData({
@@ -339,21 +406,83 @@ function infoRow(doc, label, value, x, y, w, labelW = 80) {
   });
 }
 
-function drawHeader(doc, purchaseOrder, continuation = false) {
+function drawLogoFallback(doc, x, y, size, label = "LOGO") {
+  drawRoundedRect(doc, x, y, size, size, 12, COLORS.white, COLORS.softLine, 1);
+
+  drawText(doc, safeText(label).slice(0, 8), x, y + size / 2 - 8, {
+    width: size,
+    align: "center",
+    font: "Helvetica-Bold",
+    size: 10,
+    color: COLORS.muted,
+  });
+}
+
+function drawHeader(
+  doc,
+  purchaseOrder,
+  continuation = false,
+  logoBuffer = null,
+) {
   const left = PAGE.marginLeft;
   const right = PAGE.width - PAGE.marginRight;
   const top = PAGE.marginTop;
 
   if (!continuation) {
-    drawRoundedRect(doc, left, top, right - left, 78, 14, COLORS.brand, null);
+    drawRoundedRect(doc, left, top, right - left, 88, 14, COLORS.brand, null);
   } else {
-    drawRoundedRect(doc, left, top, right - left, 58, 14, COLORS.brand, null);
+    drawRoundedRect(doc, left, top, right - left, 66, 14, COLORS.brand, null);
   }
 
-  drawText(doc, purchaseOrder.locationName || "Business", left + 18, top + 16, {
-    width: 220,
+  const logoSize = continuation ? 42 : 58;
+  const logoX = left + 16;
+  const logoY = top + (continuation ? 12 : 15);
+
+  if (logoBuffer) {
+    try {
+      drawRoundedRect(
+        doc,
+        logoX,
+        logoY,
+        logoSize,
+        logoSize,
+        12,
+        COLORS.white,
+        COLORS.softLine,
+        1,
+      );
+
+      doc.image(logoBuffer, logoX + 4, logoY + 4, {
+        fit: [logoSize - 8, logoSize - 8],
+        align: "center",
+        valign: "center",
+      });
+    } catch {
+      drawLogoFallback(
+        doc,
+        logoX,
+        logoY,
+        logoSize,
+        purchaseOrder.locationCode || purchaseOrder.locationName || "LOGO",
+      );
+    }
+  } else {
+    drawLogoFallback(
+      doc,
+      logoX,
+      logoY,
+      logoSize,
+      purchaseOrder.locationCode || purchaseOrder.locationName || "LOGO",
+    );
+  }
+
+  const textX = logoX + logoSize + 14;
+  const textW = 190;
+
+  drawText(doc, purchaseOrder.locationName || "Business", textX, top + 16, {
+    width: textW,
     font: "Helvetica-Bold",
-    size: 18,
+    size: continuation ? 15 : 18,
     color: COLORS.white,
   });
 
@@ -362,27 +491,52 @@ function drawHeader(doc, purchaseOrder, continuation = false) {
     purchaseOrder.locationCode
       ? `Branch code: ${purchaseOrder.locationCode}`
       : "Branch",
-    left + 18,
-    top + 39,
+    textX,
+    top + (continuation ? 36 : 40),
     {
-      width: 220,
+      width: textW,
       font: "Helvetica",
       size: 9,
       color: "#E5E7EB",
     },
   );
 
-  drawText(doc, "PURCHASE ORDER", left + 18, top + (continuation ? 18 : 54), {
-    width: 240,
-    font: "Helvetica-Bold",
-    size: continuation ? 14 : 11,
-    color: continuation ? COLORS.white : "#D1D5DB",
-  });
+  if (!continuation) {
+    const contactBits = [
+      safeTextSoft(purchaseOrder.locationPhone, ""),
+      safeTextSoft(purchaseOrder.locationEmail, ""),
+      safeTextSoft(purchaseOrder.locationWebsite, ""),
+    ].filter(Boolean);
+
+    if (contactBits.length) {
+      drawText(doc, contactBits.join(" • "), textX, top + 54, {
+        width: 250,
+        font: "Helvetica",
+        size: 8.5,
+        color: "#E5E7EB",
+        ellipsis: true,
+      });
+    }
+
+    drawText(doc, "PURCHASE ORDER", textX, top + 69, {
+      width: 240,
+      font: "Helvetica-Bold",
+      size: 11,
+      color: "#D1D5DB",
+    });
+  } else {
+    drawText(doc, "PURCHASE ORDER", textX, top + 49, {
+      width: 220,
+      font: "Helvetica-Bold",
+      size: 12.5,
+      color: COLORS.white,
+    });
+  }
 
   const metaW = 208;
   const metaX = right - metaW - 14;
   const metaY = top + 10;
-  const metaH = continuation ? 38 : 58;
+  const metaH = continuation ? 46 : 66;
 
   drawRoundedRect(doc, metaX, metaY, metaW, metaH, 10, COLORS.white, null);
 
@@ -407,40 +561,72 @@ function drawHeader(doc, purchaseOrder, continuation = false) {
     },
   );
 
+  drawLine(
+    doc,
+    metaX + 12,
+    metaY + 26,
+    metaX + metaW - 12,
+    metaY + 26,
+    COLORS.softLine,
+    1,
+  );
+
+  const orderNoText = safeText(purchaseOrder.poNo);
+  doc.save();
+  doc.font("Helvetica-Bold");
+  doc.fontSize(orderNoText.length > 24 ? 9.2 : 10);
+  doc.fillColor(COLORS.ink);
+
+  drawText(doc, "ORDER NUMBER", metaX + 12, metaY + 35, {
+    width: 82,
+    font: "Helvetica-Bold",
+    size: 7.5,
+    color: COLORS.muted,
+  });
+
+  doc.text(orderNoText, metaX + 98, metaY + 34, {
+    width: metaW - 110,
+    align: "right",
+    ellipsis: true,
+    lineBreak: false,
+  });
+  doc.restore();
+
   if (!continuation) {
     drawLine(
       doc,
       metaX + 12,
-      metaY + 26,
+      metaY + 50,
       metaX + metaW - 12,
-      metaY + 26,
+      metaY + 50,
       COLORS.softLine,
       1,
     );
 
-    const orderNoText = safeText(purchaseOrder.poNo);
-    doc.save();
-    doc.font("Helvetica-Bold");
-    doc.fontSize(orderNoText.length > 24 ? 9.2 : 10);
-    doc.fillColor(COLORS.ink);
-
-    drawText(doc, "ORDER NUMBER", metaX + 12, metaY + 35, {
-      width: 82,
+    drawText(doc, "STATUS", metaX + 12, metaY + 56, {
+      width: 60,
       font: "Helvetica-Bold",
       size: 7.5,
       color: COLORS.muted,
     });
 
-    doc.text(orderNoText, metaX + 98, metaY + 34, {
-      width: metaW - 110,
-      align: "right",
-      ellipsis: true,
-      lineBreak: false,
-    });
-    doc.restore();
+    drawText(
+      doc,
+      safeText(purchaseOrder.status, "DRAFT"),
+      metaX + 92,
+      metaY + 55,
+      {
+        width: metaW - 104,
+        align: "right",
+        font: "Helvetica-Bold",
+        size: 9.5,
+        color: COLORS.ink,
+        lineBreak: false,
+      },
+    );
   }
 
-  return top + (continuation ? 72 : 96);
+  return top + (continuation ? 80 : 106);
 }
 
 function drawSupplierAndDelivery(doc, purchaseOrder, y) {
@@ -1005,7 +1191,11 @@ function measureEndingSectionHeight(doc, purchaseOrder) {
   return h;
 }
 
-function generatePurchaseOrderPdfBuffer({ purchaseOrder, items }) {
+function generatePurchaseOrderPdfBuffer({
+  purchaseOrder,
+  items,
+  logoBuffer = null,
+}) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: "A4",
@@ -1023,7 +1213,7 @@ function generatePurchaseOrderPdfBuffer({ purchaseOrder, items }) {
     const bottomLimit = PAGE.height - PAGE.marginBottom;
     const endingHeight = measureEndingSectionHeight(doc, purchaseOrder);
 
-    let bodyStart = drawHeader(doc, purchaseOrder, false);
+    let bodyStart = drawHeader(doc, purchaseOrder, false, logoBuffer);
     let nextY = drawSupplierAndDelivery(doc, purchaseOrder, bodyStart);
 
     drawText(doc, "ORDER LINES", PAGE.marginLeft, nextY, {
@@ -1046,7 +1236,7 @@ function generatePurchaseOrderPdfBuffer({ purchaseOrder, items }) {
       if (currentY + rowHeight + reserve > bottomLimit) {
         doc.addPage();
 
-        bodyStart = drawHeader(doc, purchaseOrder, true);
+        bodyStart = drawHeader(doc, purchaseOrder, true, logoBuffer);
 
         drawText(doc, "ORDER LINES", PAGE.marginLeft, bodyStart, {
           width: PAGE.width - PAGE.marginLeft - PAGE.marginRight,
@@ -1075,7 +1265,7 @@ function generatePurchaseOrderPdfBuffer({ purchaseOrder, items }) {
     if (!items.length) {
       if (currentY + endingHeight > bottomLimit) {
         doc.addPage();
-        bodyStart = drawHeader(doc, purchaseOrder, true);
+        bodyStart = drawHeader(doc, purchaseOrder, true, logoBuffer);
         currentY = bodyStart + 8;
       }
 
@@ -1108,7 +1298,7 @@ function generatePurchaseOrderPdfBuffer({ purchaseOrder, items }) {
 
     if (currentY + endingHeight > bottomLimit) {
       doc.addPage();
-      bodyStart = drawHeader(doc, purchaseOrder, true);
+      bodyStart = drawHeader(doc, purchaseOrder, true, logoBuffer);
       currentY = bodyStart + 6;
     }
 
@@ -1129,7 +1319,14 @@ async function buildPurchaseOrderPdfBuffer({
     locationId,
   });
 
-  const buffer = await generatePurchaseOrderPdfBuffer(data);
+  const logoBuffer = await loadLogoBuffer(
+    data?.purchaseOrder?.locationLogoUrl || "",
+  );
+
+  const buffer = await generatePurchaseOrderPdfBuffer({
+    ...data,
+    logoBuffer,
+  });
 
   return {
     fileName:
