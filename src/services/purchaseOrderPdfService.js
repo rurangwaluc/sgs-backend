@@ -540,7 +540,7 @@ function drawSupplierAndDelivery(doc, purchaseOrder, y) {
 
   sectionTitle(
     doc,
-    "Delivery / Order Info",
+    "Purchase Order Info",
     left + cardW + gap + 14,
     y + 12,
     cardW - 28,
