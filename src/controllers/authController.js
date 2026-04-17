@@ -1,3 +1,5 @@
+"use strict";
+
 const crypto = require("crypto");
 
 const { db } = require("../config/db");
@@ -35,9 +37,8 @@ function readSignedSid(request) {
 }
 
 function sidCookieOptions(expiresAt) {
-  const isProd = env.NODE_ENV === "production";
-  const secure = Boolean(env.COOKIE_SECURE);
-  const sameSite = isProd ? "none" : "lax";
+  const sameSite = env.COOKIE_SAME_SITE || "lax";
+  const secure = sameSite === "none" ? true : Boolean(env.COOKIE_SECURE);
 
   const opts = {
     httpOnly: true,
@@ -48,13 +49,32 @@ function sidCookieOptions(expiresAt) {
     expires: expiresAt,
   };
 
-  if (env.COOKIE_DOMAIN) opts.domain = env.COOKIE_DOMAIN;
+  if (env.COOKIE_DOMAIN) {
+    opts.domain = env.COOKIE_DOMAIN;
+  }
+
   return opts;
 }
 
-// SAFE VERSION:
-// flat select only, then shape response in JS.
-// This avoids Drizzle nested-select shape failures.
+function clearSidCookieOptions() {
+  const sameSite = env.COOKIE_SAME_SITE || "lax";
+  const secure = sameSite === "none" ? true : Boolean(env.COOKIE_SECURE);
+
+  const opts = {
+    httpOnly: true,
+    secure,
+    sameSite,
+    path: "/",
+    signed: true,
+  };
+
+  if (env.COOKIE_DOMAIN) {
+    opts.domain = env.COOKIE_DOMAIN;
+  }
+
+  return opts;
+}
+
 async function buildUserWithLocation(userId) {
   const rows = await db
     .select({
@@ -125,7 +145,6 @@ async function buildUserWithLocation(userId) {
   };
 }
 
-// keep this helper for login only
 async function touchLastSeen(userId, request) {
   try {
     if (!userId) return;
@@ -201,7 +220,6 @@ async function login(request, reply) {
 
   reply.setCookie("sid", sessionTokenRaw, sidCookieOptions(expiresAt));
 
-  // keep this on login so the login response reflects activity immediately
   await touchLastSeen(user.id, request);
 
   const userOut = await buildUserWithLocation(user.id);
@@ -217,9 +235,6 @@ async function me(request, reply) {
     return reply.status(401).send({ error: "Unauthorized" });
   }
 
-  // IMPORTANT:
-  // do NOT touch lastSeenAt here anymore.
-  // sessionAuth already updates it for authenticated requests.
   const userOut = await buildUserWithLocation(Number(request.user.id));
   if (!userOut) {
     return reply.status(401).send({ error: "Unauthorized" });
@@ -242,13 +257,10 @@ async function logout(request, reply) {
     action: AUDIT.LOGOUT,
     entity: "session",
     entityId: null,
-    description: `User logged out`,
+    description: "User logged out",
   });
 
-  reply.clearCookie("sid", {
-    path: "/",
-    ...(env.COOKIE_DOMAIN ? { domain: env.COOKIE_DOMAIN } : {}),
-  });
+  reply.clearCookie("sid", clearSidCookieOptions());
 
   return reply.send({ ok: true });
 }

@@ -103,8 +103,17 @@ const {
   purchaseOrdersPdfRoutes,
 } = require("./routes/purchaseOrdersPdf.routes");
 
+function normalizeOrigin(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\/+$/, "");
+}
+
 function buildApp() {
-  const app = fastify({ logger: true });
+  const app = fastify({
+    logger: true,
+    trustProxy: true,
+  });
 
   const { db } = require("./config/db");
   const { sql } = require("drizzle-orm");
@@ -116,15 +125,30 @@ function buildApp() {
     })
     .catch((e) => console.error("[DB CHECK FAILED]", e));
 
-  const allowList = new Set(env.CORS_ORIGINS);
+  const allowList = new Set(
+    (Array.isArray(env.CORS_ORIGINS) ? env.CORS_ORIGINS : [])
+      .map(normalizeOrigin)
+      .filter(Boolean),
+  );
 
   app.register(cors, {
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Bootstrap-Secret"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Bootstrap-Secret",
+      "X-Requested-With",
+    ],
+    exposedHeaders: ["Content-Disposition", "Content-Length", "Content-Type"],
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      if (allowList.has(origin)) return cb(null, true);
+
+      const normalized = normalizeOrigin(origin);
+      if (allowList.has(normalized)) {
+        return cb(null, true);
+      }
+
       cb(new Error(`CORS blocked for origin: ${origin}`), false);
     },
   });
@@ -219,44 +243,13 @@ function buildApp() {
 
   if (typeof supplierProfilesRoutes === "function") {
     app.register(supplierProfilesRoutes);
-  } else {
-    app.log.error(
-      { supplierProfilesRoutesType: typeof supplierProfilesRoutes },
-      "supplierProfilesRoutes is not a valid Fastify plugin",
-    );
   }
 
   if (typeof supplierEvaluationsRoutes === "function") {
     app.register(supplierEvaluationsRoutes);
-  } else {
-    app.log.error(
-      { supplierEvaluationsRoutesType: typeof supplierEvaluationsRoutes },
-      "supplierEvaluationsRoutes is not a valid Fastify plugin",
-    );
   }
 
   app.register(adminCoverageRoutes);
-
-  try {
-    console.log(app.printRoutes());
-  } catch (err) {
-    app.log.error({ err }, "Failed to print Fastify routes");
-  }
-
-  app.setErrorHandler((error, request, reply) => {
-    request.log.error(error);
-
-    const statusCode = error.statusCode || 500;
-    const message =
-      statusCode === 429
-        ? "Too Many Requests"
-        : error.message || "Internal Server Error";
-
-    reply.status(statusCode).send({
-      error: message,
-      debug: error.debug || undefined,
-    });
-  });
 
   return app;
 }
