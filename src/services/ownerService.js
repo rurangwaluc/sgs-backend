@@ -1,5 +1,5 @@
 const { db } = require("../config/db");
-const { and, desc, eq, ne, sql } = require("drizzle-orm");
+const { and, desc, eq, ne } = require("drizzle-orm");
 
 const { locations } = require("../db/schema/locations.schema");
 const { users } = require("../db/schema/users.schema");
@@ -54,6 +54,7 @@ function baseLocationSelect() {
     name: locations.name,
     code: locations.code,
     status: locations.status,
+    isMain: locations.isMain,
 
     email: locations.email,
     phone: locations.phone,
@@ -73,7 +74,7 @@ function baseLocationSelect() {
   };
 }
 
-async function ensureLocationExists(locationId) {
+async function ensureLocationExists(locationId, tx = db) {
   const id = toInt(locationId);
   if (!id) {
     const err = new Error("Invalid location");
@@ -81,7 +82,7 @@ async function ensureLocationExists(locationId) {
     throw err;
   }
 
-  const rows = await db
+  const rows = await tx
     .select(baseLocationSelect())
     .from(locations)
     .where(eq(locations.id, id))
@@ -133,6 +134,44 @@ async function hasOpenCashSession(locationId) {
   return !!rows[0];
 }
 
+async function getMainLocation(tx = db) {
+  const rows = await tx
+    .select(baseLocationSelect())
+    .from(locations)
+    .where(eq(locations.isMain, true))
+    .limit(1);
+
+  return rows[0] || null;
+}
+
+async function hasAnotherActiveLocation(locationId, tx = db) {
+  const rows = await tx
+    .select({ id: locations.id })
+    .from(locations)
+    .where(
+      and(
+        eq(locations.status, LOCATION_STATUS.ACTIVE),
+        ne(locations.id, locationId),
+      ),
+    )
+    .limit(1);
+
+  return !!rows[0];
+}
+
+async function ensureCanRemoveMainStatus(location) {
+  if (!location?.isMain) return;
+
+  const hasOtherActive = await hasAnotherActiveLocation(location.id);
+  if (!hasOtherActive) {
+    const err = new Error(
+      "Main branch cannot be closed or archived until another active branch is promoted",
+    );
+    err.code = "MAIN_LOCATION_REASSIGN_REQUIRED";
+    throw err;
+  }
+}
+
 async function buildLocationCountsMap() {
   const [userRows, salesRows, paymentRows, productRows] = await Promise.all([
     db.select({ locationId: users.locationId }).from(users),
@@ -178,7 +217,11 @@ async function listLocations({ status = null } = {}) {
   const query = db
     .select(baseLocationSelect())
     .from(locations)
-    .orderBy(desc(locations.updatedAt), desc(locations.id));
+    .orderBy(
+      desc(locations.isMain),
+      desc(locations.updatedAt),
+      desc(locations.id),
+    );
 
   const locationRows = status
     ? await query.where(eq(locations.status, status))
@@ -203,6 +246,7 @@ async function getOwnerSummary({ locationId = null }) {
     : null;
 
   const allLocations = await listLocations();
+  const mainLocation = allLocations.find((row) => row.isMain) || null;
 
   const filtered = targetLocation
     ? allLocations.filter((row) => row.id === targetLocation.id)
@@ -232,6 +276,16 @@ async function getOwnerSummary({ locationId = null }) {
           name: targetLocation.name,
           code: targetLocation.code,
           status: targetLocation.status,
+          isMain: targetLocation.isMain,
+        }
+      : null,
+    mainLocation: mainLocation
+      ? {
+          id: mainLocation.id,
+          name: mainLocation.name,
+          code: mainLocation.code,
+          status: mainLocation.status,
+          isMain: true,
         }
       : null,
     totals,
@@ -245,12 +299,18 @@ async function createLocation({ actorUser, data }) {
 
   await ensureLocationCodeAvailable(code);
 
+  const currentMain = await getMainLocation();
+  const shouldBeMain = !currentMain;
+
+  const now = new Date();
+
   const [created] = await db
     .insert(locations)
     .values({
       name,
       code,
       status: LOCATION_STATUS.ACTIVE,
+      isMain: shouldBeMain,
 
       email: normalizeOptionalText(data.email, 160),
       phone: normalizeOptionalText(data.phone, 40),
@@ -262,8 +322,8 @@ async function createLocation({ actorUser, data }) {
       momoCode: normalizeOptionalText(data.momoCode, 64),
       bankAccounts: normalizeBankAccounts(data.bankAccounts),
 
-      openedAt: new Date(),
-      updatedAt: new Date(),
+      openedAt: now,
+      updatedAt: now,
     })
     .returning({ id: locations.id });
 
@@ -278,6 +338,7 @@ async function createLocation({ actorUser, data }) {
       name,
       code,
       status: LOCATION_STATUS.ACTIVE,
+      isMain: shouldBeMain,
       email: normalizeOptionalText(data.email, 160),
       phone: normalizeOptionalText(data.phone, 40),
       website: normalizeOptionalUrl(data.website, 200),
@@ -358,6 +419,11 @@ async function updateLocation({ actorUser, locationId, data }) {
         phone: location.phone,
         website: location.website,
         logoUrl: location.logoUrl,
+        address: location.address,
+        tin: location.tin,
+        momoCode: location.momoCode,
+        bankAccounts: location.bankAccounts,
+        isMain: location.isMain,
       },
       after: {
         name: updates.name ?? location.name,
@@ -368,11 +434,83 @@ async function updateLocation({ actorUser, locationId, data }) {
           updates.website !== undefined ? updates.website : location.website,
         logoUrl:
           updates.logoUrl !== undefined ? updates.logoUrl : location.logoUrl,
+        address:
+          updates.address !== undefined ? updates.address : location.address,
+        tin: updates.tin !== undefined ? updates.tin : location.tin,
+        momoCode:
+          updates.momoCode !== undefined ? updates.momoCode : location.momoCode,
+        bankAccounts:
+          updates.bankAccounts !== undefined
+            ? updates.bankAccounts
+            : location.bankAccounts,
+        isMain: location.isMain,
       },
     },
   });
 
   return ensureLocationExists(updated.id);
+}
+
+async function setMainLocation({ actorUser, locationId }) {
+  const target = await ensureLocationExists(locationId);
+
+  if (target.status !== LOCATION_STATUS.ACTIVE) {
+    const err = new Error("Main branch must be active");
+    err.code = "MAIN_LOCATION_MUST_BE_ACTIVE";
+    throw err;
+  }
+
+  const previousMain = await getMainLocation();
+  if (target.isMain) {
+    return target;
+  }
+
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(locations)
+      .set({
+        isMain: false,
+        updatedAt: now,
+      })
+      .where(eq(locations.isMain, true));
+
+    await tx
+      .update(locations)
+      .set({
+        isMain: true,
+        updatedAt: now,
+      })
+      .where(eq(locations.id, target.id));
+  });
+
+  const updated = await ensureLocationExists(target.id);
+
+  await safeLogAudit({
+    locationId: updated.id,
+    userId: actorUser.id,
+    action: AUDIT.LOCATION_SET_MAIN || "LOCATION_SET_MAIN",
+    entity: "location",
+    entityId: updated.id,
+    description: `Set branch ${updated.name} (${updated.code}) as main branch`,
+    meta: {
+      previousMain: previousMain
+        ? {
+            id: previousMain.id,
+            name: previousMain.name,
+            code: previousMain.code,
+          }
+        : null,
+      nextMain: {
+        id: updated.id,
+        name: updated.name,
+        code: updated.code,
+      },
+    },
+  });
+
+  return updated;
 }
 
 async function closeLocation({ actorUser, locationId, reason }) {
@@ -387,6 +525,8 @@ async function closeLocation({ actorUser, locationId, reason }) {
     err.code = "INVALID_LOCATION_STATUS";
     throw err;
   }
+
+  await ensureCanRemoveMainStatus(location);
 
   if (await hasOpenCashSession(location.id)) {
     const err = new Error("Location has open cash session");
@@ -418,6 +558,7 @@ async function closeLocation({ actorUser, locationId, reason }) {
       fromStatus: location.status,
       toStatus: LOCATION_STATUS.CLOSED,
       reason: String(reason || "").trim() || null,
+      wasMain: location.isMain,
     },
   });
 
@@ -455,6 +596,7 @@ async function reopenLocation({ actorUser, locationId }) {
     meta: {
       fromStatus: location.status,
       toStatus: LOCATION_STATUS.ACTIVE,
+      isMain: location.isMain,
     },
   });
 
@@ -473,6 +615,8 @@ async function archiveLocation({ actorUser, locationId, reason }) {
     err.code = "LOCATION_MUST_BE_CLOSED_FIRST";
     throw err;
   }
+
+  await ensureCanRemoveMainStatus(location);
 
   if (await hasOpenCashSession(location.id)) {
     const err = new Error("Location has open cash session");
@@ -504,6 +648,7 @@ async function archiveLocation({ actorUser, locationId, reason }) {
       fromStatus: location.status,
       toStatus: LOCATION_STATUS.ARCHIVED,
       reason: String(reason || "").trim() || location.closeReason || null,
+      wasMain: location.isMain,
     },
   });
 
@@ -516,6 +661,7 @@ module.exports = {
   getOwnerSummary,
   createLocation,
   updateLocation,
+  setMainLocation,
   closeLocation,
   reopenLocation,
   archiveLocation,

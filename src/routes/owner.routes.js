@@ -5,6 +5,7 @@ const {
   ownerLocations,
   createLocation,
   updateLocation,
+  setMainLocation,
   closeLocation,
   reopenLocation,
   archiveLocation,
@@ -27,6 +28,12 @@ async function ownerRoutes(app) {
     "/owner/locations/:id",
     { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
     updateLocation,
+  );
+
+  app.post(
+    "/owner/locations/:id/set-main",
+    { preHandler: [requirePermission(ACTIONS.OWNER_ONLY)] },
+    setMainLocation,
   );
 
   app.post(

@@ -106,6 +106,39 @@ async function updateLocation(request, reply) {
   }
 }
 
+async function setMainLocation(request, reply) {
+  const locationId = Number(request.params.id);
+  if (!locationId) {
+    return reply.status(400).send({ error: "Invalid location id" });
+  }
+
+  try {
+    const location = await ownerService.setMainLocation({
+      actorUser: request.user,
+      locationId,
+    });
+
+    return reply.send({ ok: true, location });
+  } catch (e) {
+    if (e.code === "LOCATION_NOT_FOUND") {
+      return reply.status(404).send({ error: "Location not found" });
+    }
+
+    if (e.code === "INVALID_LOCATION") {
+      return reply.status(400).send({ error: "Invalid location id" });
+    }
+
+    if (e.code === "MAIN_LOCATION_MUST_BE_ACTIVE") {
+      return reply
+        .status(409)
+        .send({ error: "Only an active branch can be the main branch" });
+    }
+
+    request.log.error(e);
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
 async function closeLocation(request, reply) {
   const locationId = Number(request.params.id);
   if (!locationId) {
@@ -142,6 +175,12 @@ async function closeLocation(request, reply) {
       return reply
         .status(409)
         .send({ error: "Invalid location status change" });
+    }
+
+    if (e.code === "MAIN_LOCATION_REASSIGN_REQUIRED") {
+      return reply.status(409).send({
+        error: "Set another active branch as main before closing this branch",
+      });
     }
 
     request.log.error(e);
@@ -210,6 +249,12 @@ async function archiveLocation(request, reply) {
         .send({ error: "Cannot archive branch with open cash session" });
     }
 
+    if (e.code === "MAIN_LOCATION_REASSIGN_REQUIRED") {
+      return reply.status(409).send({
+        error: "Set another active branch as main before archiving this branch",
+      });
+    }
+
     request.log.error(e);
     return reply.status(500).send({ error: "Internal Server Error" });
   }
@@ -220,6 +265,7 @@ module.exports = {
   ownerLocations,
   createLocation,
   updateLocation,
+  setMainLocation,
   closeLocation,
   reopenLocation,
   archiveLocation,

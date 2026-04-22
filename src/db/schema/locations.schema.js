@@ -7,6 +7,7 @@ const {
   timestamp,
   pgEnum,
   jsonb,
+  boolean,
 } = require("drizzle-orm/pg-core");
 
 const locationStatusEnum = pgEnum("location_status", [
@@ -23,6 +24,7 @@ const locations = pgTable(
     code: varchar("code", { length: 40 }).notNull(),
 
     status: locationStatusEnum("status").notNull().default("ACTIVE"),
+    isMain: boolean("is_main").notNull().default(false),
 
     // branch branding + business document info
     email: varchar("email", { length: 160 }),
@@ -50,6 +52,7 @@ const locations = pgTable(
   (t) => ({
     codeUniq: uniqueIndex("locations_code_uniq").on(t.code),
     locationsStatusIdx: index("locations_status_idx").on(t.status),
+    locationsIsMainIdx: index("locations_is_main_idx").on(t.isMain),
   }),
 );
 

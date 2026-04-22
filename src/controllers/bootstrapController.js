@@ -8,7 +8,9 @@ const { hashPassword } = require("../utils/password");
 
 function requireBootstrapSecret(request, reply) {
   if (!env.BOOTSTRAP_SECRET) {
-    reply.code(503).send({ error: "Bootstrap is disabled (missing BOOTSTRAP_SECRET)" });
+    reply
+      .code(503)
+      .send({ error: "Bootstrap is disabled (missing BOOTSTRAP_SECRET)" });
     return false;
   }
 
@@ -29,23 +31,33 @@ async function bootstrap(request, reply) {
   const body = request.body || {};
 
   const locationName = String(body.locationName || "Main Store").trim();
-  const locationCode = String(body.locationCode || "LOC-1").trim().toUpperCase();
+  const locationCode = String(body.locationCode || "LOC-1")
+    .trim()
+    .toUpperCase();
 
   const ownerName = String(body.ownerName || "Bcs Owner").trim();
-  const ownerEmail = String(body.ownerEmail || "bcs@company.com").trim().toLowerCase();
+  const ownerEmail = String(body.ownerEmail || "bcs@company.com")
+    .trim()
+    .toLowerCase();
   const ownerPassword = String(body.ownerPassword || "ChangeMe123!").trim();
 
   if (!locationName || !locationCode) {
-    return reply.code(400).send({ error: "locationName and locationCode are required" });
+    return reply
+      .code(400)
+      .send({ error: "locationName and locationCode are required" });
   }
   if (!ownerEmail || !ownerPassword) {
-    return reply.code(400).send({ error: "ownerEmail and ownerPassword are required" });
+    return reply
+      .code(400)
+      .send({ error: "ownerEmail and ownerPassword are required" });
   }
 
   // Only allow when DB is empty (no users)
   const existingUsers = await db.select({ id: users.id }).from(users).limit(1);
   if (existingUsers.length > 0) {
-    return reply.code(409).send({ error: "Bootstrap already done (users exist)" });
+    return reply
+      .code(409)
+      .send({ error: "Bootstrap already done (users exist)" });
   }
 
   // Hard safety: clear sessions too (not required, but safe)
@@ -54,8 +66,17 @@ async function bootstrap(request, reply) {
   // Create location then owner
   const insertedLoc = await db
     .insert(locations)
-    .values({ name: locationName, code: locationCode })
-    .returning({ id: locations.id, name: locations.name, code: locations.code });
+    .values({
+      name: locationName,
+      code: locationCode,
+      isMain: true,
+    })
+    .returning({
+      id: locations.id,
+      name: locations.name,
+      code: locations.code,
+      isMain: locations.isMain,
+    });
 
   const loc = insertedLoc[0];
 
@@ -71,14 +92,24 @@ async function bootstrap(request, reply) {
       role: "owner",
       isActive: true,
     })
-    .returning({ id: users.id, name: users.name, email: users.email, role: users.role });
+    .returning({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+    });
 
   const u = insertedUser[0];
 
   return reply.send({
     ok: true,
     created: {
-      location: { id: String(loc.id), name: loc.name, code: loc.code },
+      location: {
+        id: String(loc.id),
+        name: loc.name,
+        code: loc.code,
+        isMain: !!loc.isMain,
+      },
       owner: { id: String(u.id), name: u.name, email: u.email, role: u.role },
     },
     next: {
