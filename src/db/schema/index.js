@@ -35,6 +35,8 @@ module.exports = {
   expenseAttachments: require("./expense_attachments.schema"),
   cashbookDeposits: require("./cashbook_deposits.schema"),
 
+  businessLoansReceived: require("./business_loans_received.schema"),
+
   // Refunds (pro)
   refunds: require("./refunds.schema"),
   refundItems: require("./refund_items.schema"),
