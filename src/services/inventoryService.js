@@ -31,6 +31,9 @@ function mapProductRow(row, includePurchasePrice = true) {
   if (!row) return null;
 
   const purchasePrice = Number(row.costPrice ?? row.purchasePrice ?? 0);
+  const maxDiscountAmount = Number(
+    row.maxDiscountAmount ?? row.max_discount_amount ?? 0,
+  );
 
   return {
     id: Number(row.id),
@@ -53,8 +56,8 @@ function mapProductRow(row, includePurchasePrice = true) {
     color: row.color ?? null,
     material: row.material ?? null,
 
-    gender: null,
-    season: null,
+    gender: row.gender ?? null,
+    season: row.season ?? null,
 
     unit: row.unit ?? "PIECE",
 
@@ -63,6 +66,8 @@ function mapProductRow(row, includePurchasePrice = true) {
     purchasePrice: includePurchasePrice ? purchasePrice : null,
 
     maxDiscountPercent: Number(row.maxDiscountPercent ?? 0),
+    maxDiscountAmount,
+
     reorderLevel: Number(row.reorderLevel ?? 0),
 
     isActive: row.isActive !== false,
@@ -76,14 +81,18 @@ function mapProductRow(row, includePurchasePrice = true) {
         ? undefined
         : Number(row.qtyOnHand || 0),
 
-    stockUnit: row.unit ?? "PIECE",
-    salesUnit: row.unit ?? "PIECE",
-    purchaseUnit: row.unit ?? "PIECE",
-    purchaseUnitFactor: 1,
-    supplierSku: row.supplierCode ?? null,
-    variantSummary: row.variantLabel ?? null,
-    trackInventory: true,
-    attributes: null,
+    stockUnit: row.stockUnit ?? row.unit ?? "PIECE",
+    salesUnit: row.salesUnit ?? row.unit ?? "PIECE",
+    purchaseUnit: row.purchaseUnit ?? row.unit ?? "PIECE",
+    purchaseUnitFactor:
+      row.purchaseUnitFactor === undefined || row.purchaseUnitFactor === null
+        ? 1
+        : Number(row.purchaseUnitFactor || 1),
+
+    supplierSku: row.supplierSku ?? row.supplierCode ?? null,
+    variantSummary: row.variantSummary ?? row.variantLabel ?? null,
+    trackInventory: row.trackInventory ?? true,
+    attributes: row.attributes ?? null,
   };
 }
 
@@ -137,6 +146,7 @@ async function createProduct({ locationId, userId, data }) {
         sellingPrice: normalizePositiveInt(data.sellingPrice, 0),
         costPrice: normalizePositiveInt(data.costPrice, 0),
         maxDiscountPercent: normalizePositiveInt(data.maxDiscountPercent, 0),
+        maxDiscountAmount: normalizePositiveInt(data.maxDiscountAmount, 0),
 
         isActive: true,
         notes: cleanText(data.notes, 4000),
@@ -217,10 +227,13 @@ async function listProducts({
       p.size,
       p.color,
       p.material,
+      p.gender,
+      p.season,
       p.unit,
       p.selling_price as "sellingPrice",
       p.cost_price as "purchasePrice",
       p.max_discount_percent as "maxDiscountPercent",
+      p.max_discount_amount as "maxDiscountAmount",
       p.reorder_level as "reorderLevel",
       p.is_active as "isActive",
       p.notes,
@@ -247,6 +260,7 @@ async function updateProductPricing({
   purchasePrice,
   sellingPrice,
   maxDiscountPercent,
+  maxDiscountAmount,
 }) {
   return db.transaction(async (tx) => {
     const found = await tx
@@ -270,12 +284,24 @@ async function updateProductPricing({
       throw err;
     }
 
+    const normalizedPurchasePrice = normalizePositiveInt(purchasePrice, 0);
+    const normalizedSellingPrice = normalizePositiveInt(sellingPrice, 0);
+    const normalizedMaxDiscountPercent = normalizePositiveInt(
+      maxDiscountPercent,
+      0,
+    );
+    const normalizedMaxDiscountAmount = normalizePositiveInt(
+      maxDiscountAmount,
+      0,
+    );
+
     const [updated] = await tx
       .update(products)
       .set({
-        costPrice: normalizePositiveInt(purchasePrice, 0),
-        sellingPrice: normalizePositiveInt(sellingPrice, 0),
-        maxDiscountPercent: normalizePositiveInt(maxDiscountPercent, 0),
+        costPrice: normalizedPurchasePrice,
+        sellingPrice: normalizedSellingPrice,
+        maxDiscountPercent: normalizedMaxDiscountPercent,
+        maxDiscountAmount: normalizedMaxDiscountAmount,
         updatedAt: new Date(),
       })
       .where(
@@ -291,9 +317,10 @@ async function updateProductPricing({
       description: `Updated pricing for product #${productId}`,
       meta: {
         productId,
-        purchasePrice: normalizePositiveInt(purchasePrice, 0),
-        sellingPrice: normalizePositiveInt(sellingPrice, 0),
-        maxDiscountPercent: normalizePositiveInt(maxDiscountPercent, 0),
+        purchasePrice: normalizedPurchasePrice,
+        sellingPrice: normalizedSellingPrice,
+        maxDiscountPercent: normalizedMaxDiscountPercent,
+        maxDiscountAmount: normalizedMaxDiscountAmount,
         locationId,
       },
       locationId,
@@ -323,10 +350,13 @@ async function getInventoryBalances({ locationId, includeInactive = false }) {
       p.size,
       p.color,
       p.material,
+      p.gender,
+      p.season,
       p.unit,
       p.selling_price as "sellingPrice",
       p.cost_price as "purchasePrice",
       p.max_discount_percent as "maxDiscountPercent",
+      p.max_discount_amount as "maxDiscountAmount",
       p.reorder_level as "reorderLevel",
       p.is_active as "isActive",
       p.notes,

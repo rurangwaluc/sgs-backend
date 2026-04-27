@@ -222,6 +222,7 @@ async function updateProductPricing(request, reply) {
       purchasePrice: parsed.data.purchasePrice,
       sellingPrice: parsed.data.sellingPrice,
       maxDiscountPercent: parsed.data.maxDiscountPercent ?? 0,
+      maxDiscountAmount: parsed.data.maxDiscountAmount ?? 0,
     });
 
     return reply.send({ ok: true, product: updated });

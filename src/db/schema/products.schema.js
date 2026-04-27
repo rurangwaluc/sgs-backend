@@ -21,7 +21,6 @@ const products = pgTable(
       .notNull()
       .references(() => locations.id, { onDelete: "cascade" }),
 
-    // Existing core fields
     name: varchar("name", { length: 160 }).notNull(),
     sku: varchar("sku", { length: 80 }),
     unit: varchar("unit", { length: 30 }).notNull().default("PIECE"),
@@ -34,14 +33,17 @@ const products = pgTable(
 
     maxDiscountPercent: integer("max_discount_percent").notNull().default(0),
 
+    maxDiscountAmount: bigint("max_discount_amount", { mode: "number" })
+      .notNull()
+      .default(0),
+
     isActive: boolean("is_active").notNull().default(true),
 
     notes: text("notes"),
 
-    // New professional catalog fields
     productType: varchar("product_type", { length: 40 })
       .notNull()
-      .default("HARDWARE"), // HARDWARE | APPAREL | FOOTWEAR | PPE | ACCESSORY | OTHER
+      .default("HARDWARE"),
 
     category: varchar("category", { length: 80 }).default("GENERAL"),
     subcategory: varchar("subcategory", { length: 80 }),
@@ -49,7 +51,7 @@ const products = pgTable(
     brand: varchar("brand", { length: 80 }),
     model: varchar("model", { length: 120 }),
 
-    variantLabel: varchar("variant_label", { length: 120 }), // e.g. "Size 42 Black"
+    variantLabel: varchar("variant_label", { length: 120 }),
     size: varchar("size", { length: 40 }),
     color: varchar("color", { length: 40 }),
     material: varchar("material", { length: 80 }),
@@ -59,8 +61,7 @@ const products = pgTable(
 
     reorderLevel: integer("reorder_level").notNull().default(0),
 
-    // For mixed quincaillerie catalog
-    gender: varchar("gender", { length: 20 }), // MEN | WOMEN | UNISEX | KIDS
+    gender: varchar("gender", { length: 20 }),
     season: varchar("season", { length: 40 }),
 
     createdAt: timestamp("created_at", { withTimezone: true })

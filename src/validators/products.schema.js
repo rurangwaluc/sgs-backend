@@ -26,7 +26,11 @@ const createProductSchema = z.object({
 
   sellingPrice: z.coerce.number().int().min(0),
   costPrice: z.coerce.number().int().min(0).default(0),
+
   maxDiscountPercent: z.coerce.number().int().min(0).max(100).default(0),
+
+  // NEW:
+  maxDiscountAmount: z.coerce.number().int().min(0).default(0),
 
   isActive: z.boolean().optional().default(true),
   notes: z.string().trim().max(2000).optional(),
@@ -71,7 +75,11 @@ const updateProductSchema = z.object({
 
   sellingPrice: z.coerce.number().int().min(0).optional(),
   costPrice: z.coerce.number().int().min(0).optional(),
+
   maxDiscountPercent: z.coerce.number().int().min(0).max(100).optional(),
+
+  // NEW:
+  maxDiscountAmount: z.coerce.number().int().min(0).optional(),
 
   isActive: z.boolean().optional(),
   notes: z.string().trim().max(2000).optional(),
