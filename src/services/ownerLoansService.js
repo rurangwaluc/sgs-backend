@@ -176,6 +176,72 @@ async function getScopedLoanOrThrow({ loanId, locationId, tx = db }) {
   return row;
 }
 
+async function getAvailableBalanceForLocationMethod({
+  locationId,
+  method,
+  tx = db,
+}) {
+  if (!cashLedger) return 0;
+
+  const lid = requireValidLocationId(locationId);
+  const normalizedMethod = normalizeMethod(method, "OTHER");
+
+  const rows = await tx
+    .select({
+      balance: sql`
+        COALESCE(
+          SUM(
+            CASE
+              WHEN UPPER(COALESCE(${cashLedger.direction}, '')) = 'IN' THEN COALESCE(${cashLedger.amount}, 0)
+              WHEN UPPER(COALESCE(${cashLedger.direction}, '')) = 'OUT' THEN -COALESCE(${cashLedger.amount}, 0)
+              ELSE 0
+            END
+          ),
+          0
+        )::int
+      `.as("balance"),
+    })
+    .from(cashLedger)
+    .where(
+      and(
+        eq(cashLedger.locationId, lid),
+        eq(cashLedger.method, normalizedMethod),
+      ),
+    );
+
+  return Math.max(0, Number(rows?.[0]?.balance || 0));
+}
+
+async function assertEnoughAvailableBalance({
+  locationId,
+  method,
+  amount,
+  tx = db,
+}) {
+  const requestedAmount = moneyInt(amount);
+  const availableBalance = await getAvailableBalanceForLocationMethod({
+    locationId,
+    method,
+    tx,
+  });
+
+  if (requestedAmount > availableBalance) {
+    const err = new Error(
+      `Not enough ${String(method || "OTHER").toLowerCase()} balance in this branch. Available: ${availableBalance}. Requested: ${requestedAmount}.`,
+    );
+    err.statusCode = 409;
+    err.meta = {
+      availableBalance,
+      requestedAmount,
+      locationId,
+      method: normalizeMethod(method, "OTHER"),
+    };
+    throw err;
+  }
+
+  return availableBalance;
+}
+
 async function createCashLedgerEntryIfPossible({
   tx,
   locationId,
@@ -480,6 +546,7 @@ async function createOwnerLoan({ actorUser, payload }) {
 
   const createdByUserId = actorUser?.id ? Number(actorUser.id) : null;
   const receiverType = normalizeReceiverType(data.receiverType, "OTHER");
+  const disbursementMethod = normalizeMethod(data.disbursementMethod, "OTHER");
 
   const receiverName =
     receiverType === "CUSTOMER"
@@ -503,6 +570,13 @@ async function createOwnerLoan({ actorUser, payload }) {
   });
 
   const result = await db.transaction(async (tx) => {
+    await assertEnoughAvailableBalance({
+      locationId,
+      method: disbursementMethod,
+      amount: principalAmount,
+      tx,
+    });
+
     const [loan] = await tx
       .insert(ownerLoans)
       .values({
@@ -515,7 +589,7 @@ async function createOwnerLoan({ actorUser, payload }) {
         principalAmount,
         repaidAmount: 0,
         currency: normalizeCurrency(data.currency, "RWF"),
-        disbursementMethod: normalizeMethod(data.disbursementMethod, "OTHER"),
+        disbursementMethod,
         reference: cleanStr(data.reference),
         note: cleanStr(data.note),
         status,
@@ -595,7 +669,8 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
     data.currency !== undefined ||
     data.disbursementMethod !== undefined ||
     data.disbursedAt !== undefined ||
-    data.status !== undefined;
+    data.status !== undefined ||
+    data.locationId !== undefined;
 
   if (hasRepayments && wantsStructuralChange) {
     const err = new Error(
@@ -604,6 +679,11 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
     err.statusCode = 409;
     throw err;
   }
+
+  const nextLocationId =
+    data.locationId !== undefined
+      ? requireValidLocationId(data.locationId)
+      : Number(existing.locationId);
 
   const nextReceiverType =
     data.receiverType !== undefined
@@ -619,7 +699,7 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
   if (nextReceiverType === "CUSTOMER") {
     nextCustomer = await getCustomerOrThrow({
       customerId: nextCustomerId,
-      locationId,
+      locationId: nextLocationId,
     });
     nextCustomerId = Number(nextCustomer.id);
   } else {
@@ -637,6 +717,11 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
     throw err;
   }
 
+  const nextDisbursementMethod =
+    data.disbursementMethod !== undefined
+      ? normalizeMethod(data.disbursementMethod, existing.disbursementMethod)
+      : normalizeMethod(existing.disbursementMethod, "OTHER");
+
   const nextStatus =
     data.status !== undefined
       ? deriveLoanStatus({
@@ -646,13 +731,34 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
         })
       : undefined;
 
+  const amountIncreased =
+    nextPrincipalAmount > moneyInt(existing.principalAmount || 0);
+
+  const methodChanged =
+    nextDisbursementMethod !==
+    normalizeMethod(existing.disbursementMethod, "OTHER");
+
+  const locationChanged =
+    Number(nextLocationId) !== Number(existing.locationId);
+
+  if (!hasRepayments && (amountIncreased || methodChanged || locationChanged)) {
+    await assertEnoughAvailableBalance({
+      locationId: nextLocationId,
+      method: nextDisbursementMethod,
+      amount: nextPrincipalAmount,
+    });
+  }
+
   const [row] = await db
     .update(ownerLoans)
     .set({
+      ...(data.locationId !== undefined ? { locationId: nextLocationId } : {}),
       ...(data.receiverType !== undefined
         ? { receiverType: nextReceiverType }
         : {}),
-      ...(data.customerId !== undefined || data.receiverType !== undefined
+      ...(data.customerId !== undefined ||
+      data.receiverType !== undefined ||
+      data.locationId !== undefined
         ? { customerId: nextCustomerId }
         : {}),
       ...(data.receiverName !== undefined || nextReceiverType === "CUSTOMER"
@@ -695,10 +801,7 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
         : {}),
       ...(data.disbursementMethod !== undefined
         ? {
-            disbursementMethod: normalizeMethod(
-              data.disbursementMethod,
-              existing.disbursementMethod || "OTHER",
-            ),
+            disbursementMethod: nextDisbursementMethod,
           }
         : {}),
       ...(data.disbursedAt !== undefined
@@ -726,7 +829,7 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
   }
 
   await safeLogAudit({
-    locationId,
+    locationId: nextLocationId,
     userId: actorUser?.id || null,
     action: AUDIT.OWNER_LOAN_UPDATE || "OWNER_LOAN_UPDATE",
     entity: "owner_loan",
@@ -739,6 +842,8 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
       principalAmount: row.principalAmount,
       repaidAmount: row.repaidAmount,
       status: row.status,
+      disbursementMethod: row.disbursementMethod,
+      locationId: row.locationId,
     },
   });
 

@@ -28,12 +28,52 @@ function resolveScopedLocationId(request) {
   return queryLocationId || userLocationId || null;
 }
 
+function sanitizeErrorMeta(meta) {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta))
+    return undefined;
+
+  const out = {};
+
+  if (meta.availableBalance != null) {
+    const n = Number(meta.availableBalance);
+    if (Number.isFinite(n)) out.availableBalance = Math.trunc(n);
+  }
+
+  if (meta.requestedAmount != null) {
+    const n = Number(meta.requestedAmount);
+    if (Number.isFinite(n)) out.requestedAmount = Math.trunc(n);
+  }
+
+  if (meta.locationId != null) {
+    const n = Number(meta.locationId);
+    if (Number.isFinite(n)) out.locationId = Math.trunc(n);
+  }
+
+  if (meta.method != null) {
+    out.method = String(meta.method).trim().toUpperCase();
+  }
+
+  if (meta.currency != null) {
+    out.currency = String(meta.currency).trim().toUpperCase();
+  }
+
+  if (meta.code != null) {
+    out.code = String(meta.code).trim().toUpperCase();
+  }
+
+  return Object.keys(out).length ? out : undefined;
+}
+
 function sendServiceError(request, reply, error, logMessage) {
   request.log.error({ err: error }, logMessage);
 
   const status = Number(error?.statusCode || 500);
+  const meta = sanitizeErrorMeta(error?.meta);
+
   return reply.status(status).send({
+    ok: false,
     error: error?.message || "Internal Server Error",
+    ...(meta ? { meta } : {}),
   });
 }
 
@@ -71,7 +111,10 @@ async function getOwnerLoanHandler(request, reply) {
   try {
     const id = toInt(request.params?.id, null);
     if (!id || id <= 0) {
-      return reply.status(400).send({ error: "Invalid owner loan id" });
+      return reply.status(400).send({
+        ok: false,
+        error: "Invalid owner loan id",
+      });
     }
 
     const result = await getOwnerLoan({
@@ -118,7 +161,10 @@ async function updateOwnerLoanHandler(request, reply) {
   try {
     const id = toInt(request.params?.id, null);
     if (!id || id <= 0) {
-      return reply.status(400).send({ error: "Invalid owner loan id" });
+      return reply.status(400).send({
+        ok: false,
+        error: "Invalid owner loan id",
+      });
     }
 
     const loan = await updateOwnerLoan({
@@ -145,7 +191,10 @@ async function createOwnerLoanRepaymentHandler(request, reply) {
   try {
     const id = toInt(request.params?.id, null);
     if (!id || id <= 0) {
-      return reply.status(400).send({ error: "Invalid owner loan id" });
+      return reply.status(400).send({
+        ok: false,
+        error: "Invalid owner loan id",
+      });
     }
 
     const result = await createOwnerLoanRepayment({
@@ -172,7 +221,10 @@ async function voidOwnerLoanHandler(request, reply) {
   try {
     const id = toInt(request.params?.id, null);
     if (!id || id <= 0) {
-      return reply.status(400).send({ error: "Invalid owner loan id" });
+      return reply.status(400).send({
+        ok: false,
+        error: "Invalid owner loan id",
+      });
     }
 
     const result = await voidOwnerLoan({
