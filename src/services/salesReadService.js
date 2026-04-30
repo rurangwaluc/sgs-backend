@@ -17,6 +17,97 @@ function toInt(value, fallback = 0) {
   return Number.isFinite(n) ? Math.round(n) : fallback;
 }
 
+function toBool(value, fallback = false) {
+  if (typeof value === "boolean") return value;
+  if (value === 1 || value === "1") return true;
+  if (value === 0 || value === "0") return false;
+
+  const v = String(value ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (["true", "yes", "y", "on"].includes(v)) return true;
+  if (["false", "no", "n", "off"].includes(v)) return false;
+
+  return fallback;
+}
+
+function buildStuckReasons(row) {
+  const reasons = [];
+
+  const saleStatus = String(row?.status || "").toUpperCase();
+  const creditStatus = String(row?.creditStatus || "").toUpperCase();
+  const ageSeconds = toInt(row?.ageSeconds, 0);
+
+  if (saleStatus === "DRAFT") {
+    reasons.push({
+      title: "Still in draft",
+      detail: "Sale has not moved out of draft state yet.",
+    });
+  }
+
+  if (saleStatus === "FULFILLED") {
+    reasons.push({
+      title: "Waiting next payment step",
+      detail: "Sale was fulfilled but not yet completed.",
+    });
+  }
+
+  if (saleStatus === "AWAITING_PAYMENT_RECORD") {
+    reasons.push({
+      title: "Waiting cashier payment record",
+      detail: "Items were released but payment recording is still pending.",
+    });
+  }
+
+  if (saleStatus === "PENDING") {
+    reasons.push({
+      title: "Pending workflow state",
+      detail: "Sale is pending and needs the next operator action.",
+    });
+  }
+
+  if (creditStatus === "PENDING_APPROVAL") {
+    reasons.push({
+      title: "Credit pending approval",
+      detail:
+        "This sale is linked to a credit request that still needs approval.",
+    });
+  }
+
+  if (creditStatus === "APPROVED") {
+    reasons.push({
+      title: "Approved credit still open",
+      detail: "Credit was approved but the sale is not fully settled yet.",
+    });
+  }
+
+  if (creditStatus === "PARTIALLY_PAID") {
+    reasons.push({
+      title: "Credit partially paid",
+      detail: "This sale is still active under ongoing credit collection.",
+    });
+  }
+
+  if (ageSeconds > 0) {
+    const mins = Math.floor(ageSeconds / 60);
+    reasons.push({
+      title: "Aged beyond normal flow",
+      detail: `This sale has stayed active for ${mins} minute(s).`,
+    });
+  }
+
+  if (!reasons.length) {
+    reasons.push({
+      title: "Needs review",
+      detail:
+        "This sale matches the stuck rule but no more specific reason was derived.",
+    });
+  }
+
+  return reasons;
+}
+
 /**
  * Fetch a single sale by ID with credit info and full item pricing breakdown
  */
@@ -112,12 +203,10 @@ async function getSaleById({ locationId, saleId }) {
     productName: it.productName ?? null,
     sku: it.sku ?? null,
     qty: toInt(it.qty, 0),
-
     baseUnitPrice: toInt(it.baseUnitPrice, 0),
     extraChargePerUnit: toInt(it.extraChargePerUnit, 0),
     unitPrice: toInt(it.unitPrice, 0),
     lineTotal: toInt(it.lineTotal, 0),
-
     priceAdjustmentReason: it.priceAdjustmentReason ?? null,
     priceAdjustmentType: it.priceAdjustmentType ?? null,
     priceAdjustedByUserId: toInt(it.priceAdjustedByUserId, null),
@@ -172,7 +261,17 @@ async function getSaleById({ locationId, saleId }) {
  * List sales with optional filters and credit info
  */
 async function listSales({ locationId, filters }) {
-  const { status, sellerId, q, dateFrom, dateTo, limit = 50 } = filters || {};
+  const {
+    status,
+    sellerId,
+    q,
+    dateFrom,
+    dateTo,
+    limit = 50,
+    stuck = false,
+    stuckOlderThanMinutes = 30,
+  } = filters || {};
+
   const pattern = q ? `%${String(q).trim()}%` : null;
 
   const dateFromTs = dateFrom ? new Date(dateFrom) : null;
@@ -182,6 +281,8 @@ async function listSales({ locationId, filters }) {
     : null;
 
   const lim = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const stuckMode = toBool(stuck, false);
+  const stuckMinutes = Math.max(1, toInt(stuckOlderThanMinutes, 30));
 
   const res = await db.execute(sql`
     SELECT
@@ -213,6 +314,15 @@ async function listSales({ locationId, filters }) {
       cr.created_at as "creditCreatedAt",
       cr.approved_at as "creditApprovedAt",
       cr.settled_at as "creditSettledAt",
+
+      GREATEST(EXTRACT(EPOCH FROM (NOW() - s.created_at)), 0)::int as "ageSeconds",
+
+      CASE
+        WHEN s.status NOT IN ('COMPLETED', 'CANCELLED', 'VOID')
+         AND s.created_at <= NOW() - (${stuckMinutes} * INTERVAL '1 minute')
+        THEN true
+        ELSE false
+      END as "isStuck",
 
       COALESCE(items.items_preview, '[]'::json) as "itemsPreview"
 
@@ -277,8 +387,19 @@ async function listSales({ locationId, filters }) {
     }
     ${dateFromTs ? sql`AND s.created_at >= ${dateFromTs}` : sql``}
     ${dateToNextDay ? sql`AND s.created_at < ${dateToNextDay}` : sql``}
+    ${
+      stuckMode
+        ? sql`AND s.status NOT IN ('COMPLETED', 'CANCELLED', 'VOID')
+              AND s.created_at <= NOW() - (${stuckMinutes} * INTERVAL '1 minute')`
+        : sql``
+    }
 
-    ORDER BY s.created_at DESC, s.id DESC
+    ORDER BY
+      ${
+        stuckMode
+          ? sql`s.created_at ASC, s.id ASC`
+          : sql`s.created_at DESC, s.id DESC`
+      }
     LIMIT ${lim}
   `);
 
@@ -338,6 +459,9 @@ async function listSales({ locationId, filters }) {
       ...clean,
       totalAmount: toInt(r.totalAmount, 0),
       amountPaid: toInt(r.amountPaid, 0),
+      ageSeconds: toInt(r.ageSeconds, 0),
+      isStuck: !!r.isStuck,
+      stuckReasons: buildStuckReasons(r),
       location,
       credit,
       itemsPreview,
