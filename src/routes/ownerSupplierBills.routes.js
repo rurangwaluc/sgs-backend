@@ -1,7 +1,7 @@
 "use strict";
 
 const ACTIONS = require("../permissions/actions");
-const { requirePermission } = require("../middleware/requirePermission");
+const { requireAnyPermission } = require("../middleware/requirePermission");
 const {
   listOwnerSupplierBills,
   ownerSupplierBillsSummary,
@@ -12,7 +12,9 @@ async function ownerSupplierBillsRoutes(app) {
   app.get(
     "/owner/supplier-bills",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_BILL_VIEW]),
+      ],
     },
     listOwnerSupplierBills,
   );
@@ -20,7 +22,9 @@ async function ownerSupplierBillsRoutes(app) {
   app.get(
     "/owner/supplier-bills/summary",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_BILL_VIEW]),
+      ],
     },
     ownerSupplierBillsSummary,
   );
@@ -28,7 +32,9 @@ async function ownerSupplierBillsRoutes(app) {
   app.get(
     "/owner/supplier-bills/:id",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_BILL_VIEW]),
+      ],
     },
     getOwnerSupplierBill,
   );

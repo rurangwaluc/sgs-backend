@@ -1,5 +1,5 @@
 const ACTIONS = require("../permissions/actions");
-const { requirePermission } = require("../middleware/requirePermission");
+const { requireAnyPermission } = require("../middleware/requirePermission");
 
 const {
   getOwnerReportsOverview,
@@ -12,68 +12,56 @@ const {
 } = require("../controllers/ownerReportsController");
 
 async function ownerReportsRoutes(app) {
+  const ownerOrReports = requireAnyPermission([
+    ACTIONS.OWNER_ONLY,
+    ACTIONS.REPORT_VIEW,
+  ]);
+
   app.get(
     "/owner/reports/overview",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerReportsOverview,
   );
 
   app.get(
     "/owner/reports/branch-performance",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerBranchPerformance,
   );
 
   app.get(
     "/owner/reports/financial-summary",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerFinancialSummary,
   );
 
   app.get(
     "/owner/reports/cash-flow",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerCashFlowReport,
   );
 
   app.get(
     "/owner/reports/trial-balance",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerTrialBalanceReport,
   );
 
   app.get(
     "/owner/reports/income-statement",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerIncomeStatementReport,
   );
 
   app.get(
     "/owner/reports/profit-table",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerProfitTableReport,
   );
 
-  // defensive alias in case frontend/request uses the earlier typo
   app.get(
     "/owner/reports/profile-table",
-    {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
-    },
+    { preHandler: [ownerOrReports] },
     getOwnerProfitTableReport,
   );
 }

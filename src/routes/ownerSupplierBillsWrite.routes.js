@@ -1,7 +1,7 @@
 "use strict";
 
 const ACTIONS = require("../permissions/actions");
-const { requirePermission } = require("../middleware/requirePermission");
+const { requireAnyPermission } = require("../middleware/requirePermission");
 const {
   createOwnerSupplierBill,
   updateOwnerSupplierBill,
@@ -13,7 +13,12 @@ async function ownerSupplierBillsWriteRoutes(app) {
   app.post(
     "/owner/supplier-bills",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([
+          ACTIONS.OWNER_ONLY,
+          ACTIONS.SUPPLIER_BILL_CREATE,
+        ]),
+      ],
     },
     createOwnerSupplierBill,
   );
@@ -21,7 +26,12 @@ async function ownerSupplierBillsWriteRoutes(app) {
   app.patch(
     "/owner/supplier-bills/:id",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([
+          ACTIONS.OWNER_ONLY,
+          ACTIONS.SUPPLIER_BILL_UPDATE,
+        ]),
+      ],
     },
     updateOwnerSupplierBill,
   );
@@ -29,7 +39,12 @@ async function ownerSupplierBillsWriteRoutes(app) {
   app.post(
     "/owner/supplier-bills/:id/payments",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([
+          ACTIONS.OWNER_ONLY,
+          ACTIONS.SUPPLIER_BILL_PAYMENT_CREATE,
+        ]),
+      ],
     },
     addOwnerSupplierBillPayment,
   );
@@ -37,7 +52,12 @@ async function ownerSupplierBillsWriteRoutes(app) {
   app.post(
     "/owner/supplier-bills/:id/void",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([
+          ACTIONS.OWNER_ONLY,
+          ACTIONS.SUPPLIER_BILL_DELETE,
+        ]),
+      ],
     },
     voidOwnerSupplierBill,
   );

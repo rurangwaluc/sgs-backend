@@ -23,14 +23,16 @@ function cleanStr(v) {
 
 function resolveScopedLocationId(request) {
   const queryLocationId = toInt(request.query?.locationId, null);
+  const bodyLocationId = toInt(request.body?.locationId, null);
   const userLocationId = toInt(request.user?.locationId, null);
 
-  return queryLocationId || userLocationId || null;
+  return queryLocationId || bodyLocationId || userLocationId || null;
 }
 
 function sanitizeErrorMeta(meta) {
-  if (!meta || typeof meta !== "object" || Array.isArray(meta))
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
     return undefined;
+  }
 
   const out = {};
 
@@ -119,7 +121,7 @@ async function getOwnerLoanHandler(request, reply) {
 
     const result = await getOwnerLoan({
       id,
-      locationId: toInt(request.user?.locationId, null),
+      locationId: resolveScopedLocationId(request),
     });
 
     return reply.send({
@@ -170,7 +172,10 @@ async function updateOwnerLoanHandler(request, reply) {
     const loan = await updateOwnerLoan({
       id,
       actorUser: request.user || null,
-      payload: request.body || {},
+      payload: {
+        ...(request.body || {}),
+        locationId: resolveScopedLocationId(request),
+      },
     });
 
     return reply.send({
@@ -200,7 +205,10 @@ async function createOwnerLoanRepaymentHandler(request, reply) {
     const result = await createOwnerLoanRepayment({
       id,
       actorUser: request.user || null,
-      payload: request.body || {},
+      payload: {
+        ...(request.body || {}),
+        locationId: resolveScopedLocationId(request),
+      },
     });
 
     return reply.status(201).send({
@@ -230,7 +238,10 @@ async function voidOwnerLoanHandler(request, reply) {
     const result = await voidOwnerLoan({
       id,
       actorUser: request.user || null,
-      payload: request.body || {},
+      payload: {
+        ...(request.body || {}),
+        locationId: resolveScopedLocationId(request),
+      },
     });
 
     return reply.send({

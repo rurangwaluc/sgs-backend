@@ -113,6 +113,20 @@ function requireValidLoanId(id) {
   return loanId;
 }
 
+function resolveScopedLoanLocationId(actorUser, payload = {}, fallback = null) {
+  const payloadLocationId = toInt(payload?.locationId, null);
+  if (payloadLocationId && payloadLocationId > 0) {
+    return requireValidLocationId(payloadLocationId);
+  }
+
+  const fallbackLocationId = toInt(fallback, null);
+  if (fallbackLocationId && fallbackLocationId > 0) {
+    return requireValidLocationId(fallbackLocationId);
+  }
+
+  return requireValidLocationId(actorUser?.locationId);
+}
+
 async function getCustomerOrThrow({ customerId, locationId, tx = db }) {
   const cid = toInt(customerId, null);
   const lid = requireValidLocationId(locationId);
@@ -637,9 +651,8 @@ async function createOwnerLoan({ actorUser, payload }) {
 
 async function updateOwnerLoan({ id, actorUser, payload }) {
   const loanId = requireValidLoanId(id);
-  const locationId = requireValidLocationId(actorUser?.locationId);
-
   const parsed = ownerLoanUpdateSchema.safeParse(payload || {});
+
   if (!parsed.success) {
     const err = new Error(
       parsed.error.issues?.[0]?.message || "Invalid payload",
@@ -649,6 +662,12 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
   }
 
   const data = parsed.data;
+  const locationId = resolveScopedLoanLocationId(
+    actorUser,
+    data,
+    actorUser?.locationId,
+  );
+
   const existing = await getScopedLoanOrThrow({ loanId, locationId });
 
   const currentStatus = normalizeStatus(existing.status, "OPEN");
@@ -852,9 +871,8 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
 
 async function createOwnerLoanRepayment({ id, actorUser, payload }) {
   const loanId = requireValidLoanId(id);
-  const locationId = requireValidLocationId(actorUser?.locationId);
-
   const parsed = ownerLoanRepaymentCreateSchema.safeParse(payload || {});
+
   if (!parsed.success) {
     const err = new Error(
       parsed.error.issues?.[0]?.message || "Invalid payload",
@@ -864,6 +882,12 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
   }
 
   const data = parsed.data;
+  const locationId = resolveScopedLoanLocationId(
+    actorUser,
+    data,
+    actorUser?.locationId,
+  );
+
   const amount = moneyInt(data.amount);
 
   if (!Number.isInteger(amount) || amount <= 0) {
@@ -982,9 +1006,8 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
 
 async function voidOwnerLoan({ id, actorUser, payload }) {
   const loanId = requireValidLoanId(id);
-  const locationId = requireValidLocationId(actorUser?.locationId);
-
   const parsed = ownerLoanVoidSchema.safeParse(payload || {});
+
   if (!parsed.success) {
     const err = new Error(
       parsed.error.issues?.[0]?.message || "Invalid payload",
@@ -992,6 +1015,13 @@ async function voidOwnerLoan({ id, actorUser, payload }) {
     err.statusCode = 400;
     throw err;
   }
+
+  const data = parsed.data;
+  const locationId = resolveScopedLoanLocationId(
+    actorUser,
+    data,
+    actorUser?.locationId,
+  );
 
   const loan = await getScopedLoanOrThrow({ loanId, locationId });
 
@@ -1008,7 +1038,7 @@ async function voidOwnerLoan({ id, actorUser, payload }) {
     .set({
       status: "VOID",
       note: cleanStr(
-        [loan.note, `VOID REASON: ${cleanStr(parsed.data.reason)}`]
+        [loan.note, `VOID REASON: ${cleanStr(data.reason)}`]
           .filter(Boolean)
           .join(" | "),
       ),
@@ -1037,7 +1067,7 @@ async function voidOwnerLoan({ id, actorUser, payload }) {
       receiverName: row.receiverName,
       principalAmount: row.principalAmount,
       status: row.status,
-      reason: parsed.data.reason,
+      reason: data.reason,
     },
   });
 

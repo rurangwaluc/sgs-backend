@@ -1,18 +1,31 @@
 "use strict";
 
 const ACTIONS = require("../permissions/actions");
-const { requirePermission } = require("../middleware/requirePermission");
+const {
+  requirePermission,
+  requireAnyPermission,
+} = require("../middleware/requirePermission");
+
 const {
   getOwnerSuppliersSummary,
   listOwnerSuppliers,
   getOwnerSupplier,
 } = require("../controllers/ownerSuppliersController");
 
+const {
+  getSupplierProfile,
+  createSupplierProfile,
+  updateSupplierProfile,
+  upsertSupplierProfile,
+} = require("../controllers/supplierProfilesController");
+
 async function ownerSuppliersRoutes(app) {
   app.get(
     "/owner/suppliers/summary",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_VIEW]),
+      ],
     },
     getOwnerSuppliersSummary,
   );
@@ -20,7 +33,9 @@ async function ownerSuppliersRoutes(app) {
   app.get(
     "/owner/suppliers",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_VIEW]),
+      ],
     },
     listOwnerSuppliers,
   );
@@ -28,9 +43,51 @@ async function ownerSuppliersRoutes(app) {
   app.get(
     "/owner/suppliers/:id",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_VIEW]),
+      ],
     },
     getOwnerSupplier,
+  );
+
+  app.get(
+    "/owner/suppliers/:supplierId/profile",
+    {
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_VIEW]),
+      ],
+    },
+    getSupplierProfile,
+  );
+
+  app.post(
+    "/owner/suppliers/:supplierId/profile",
+    {
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_UPDATE]),
+      ],
+    },
+    createSupplierProfile,
+  );
+
+  app.patch(
+    "/owner/suppliers/:supplierId/profile",
+    {
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_UPDATE]),
+      ],
+    },
+    updateSupplierProfile,
+  );
+
+  app.put(
+    "/owner/suppliers/:supplierId/profile",
+    {
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_UPDATE]),
+      ],
+    },
+    upsertSupplierProfile,
   );
 }
 

@@ -1,5 +1,8 @@
 const ACTIONS = require("../permissions/actions");
-const { requirePermission } = require("../middleware/requirePermission");
+const {
+  requirePermission,
+  requireAnyPermission,
+} = require("../middleware/requirePermission");
 
 const {
   getOwnerCashSummary,
@@ -12,7 +15,9 @@ async function ownerCashRoutes(app) {
   app.get(
     "/owner/cash/summary",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.CASH_REPORT_VIEW]),
+      ],
     },
     getOwnerCashSummary,
   );
@@ -20,7 +25,13 @@ async function ownerCashRoutes(app) {
   app.get(
     "/owner/cash/ledger",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([
+          ACTIONS.OWNER_ONLY,
+          ACTIONS.CASH_REPORT_VIEW,
+          ACTIONS.CASH_LEDGER_VIEW,
+        ]),
+      ],
     },
     listOwnerCashLedger,
   );
@@ -28,7 +39,13 @@ async function ownerCashRoutes(app) {
   app.get(
     "/owner/cash/sessions",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([
+          ACTIONS.OWNER_ONLY,
+          ACTIONS.CASH_REPORT_VIEW,
+          ACTIONS.CASH_SESSION_VIEW,
+        ]),
+      ],
     },
     listOwnerCashSessions,
   );
@@ -36,7 +53,13 @@ async function ownerCashRoutes(app) {
   app.get(
     "/owner/cash/refunds",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([
+          ACTIONS.OWNER_ONLY,
+          ACTIONS.CASH_REPORT_VIEW,
+          ACTIONS.REFUND_VIEW,
+        ]),
+      ],
     },
     listOwnerCashRefunds,
   );

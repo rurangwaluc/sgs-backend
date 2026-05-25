@@ -1,14 +1,16 @@
 "use strict";
 
 const ACTIONS = require("../permissions/actions");
-const { requirePermission } = require("../middleware/requirePermission");
+const { requireAnyPermission } = require("../middleware/requirePermission");
 const ownerSuppliersWriteController = require("../controllers/ownerSuppliersWriteController");
 
 async function ownerSuppliersWriteRoutes(app) {
   app.post(
     "/owner/suppliers",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_CREATE]),
+      ],
     },
     ownerSuppliersWriteController.createOwnerSupplier,
   );
@@ -16,7 +18,9 @@ async function ownerSuppliersWriteRoutes(app) {
   app.patch(
     "/owner/suppliers/:id",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_UPDATE]),
+      ],
     },
     ownerSuppliersWriteController.updateOwnerSupplier,
   );
@@ -24,7 +28,9 @@ async function ownerSuppliersWriteRoutes(app) {
   app.post(
     "/owner/suppliers/:id/deactivate",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_UPDATE]),
+      ],
     },
     ownerSuppliersWriteController.deactivateOwnerSupplier,
   );
@@ -32,7 +38,9 @@ async function ownerSuppliersWriteRoutes(app) {
   app.post(
     "/owner/suppliers/:id/reactivate",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.SUPPLIER_UPDATE]),
+      ],
     },
     ownerSuppliersWriteController.reactivateOwnerSupplier,
   );

@@ -1,5 +1,8 @@
 const ACTIONS = require("../permissions/actions");
-const { requirePermission } = require("../middleware/requirePermission");
+const {
+  requirePermission,
+  requireAnyPermission,
+} = require("../middleware/requirePermission");
 
 const {
   getOwnerCreditsSummary,
@@ -13,7 +16,9 @@ async function ownerCreditRoutes(app) {
   app.get(
     "/owner/credits/summary",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.CREDIT_VIEW]),
+      ],
     },
     getOwnerCreditsSummary,
   );
@@ -21,7 +26,9 @@ async function ownerCreditRoutes(app) {
   app.get(
     "/owner/credits",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.CREDIT_VIEW]),
+      ],
     },
     listOwnerCredits,
   );
@@ -29,7 +36,9 @@ async function ownerCreditRoutes(app) {
   app.get(
     "/owner/credits/:id",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.CREDIT_VIEW]),
+      ],
     },
     getOwnerCredit,
   );
@@ -37,7 +46,9 @@ async function ownerCreditRoutes(app) {
   app.patch(
     "/owner/credits/:id/decision",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.CREDIT_DECIDE]),
+      ],
     },
     ownerDecideCredit,
   );
@@ -45,7 +56,9 @@ async function ownerCreditRoutes(app) {
   app.patch(
     "/owner/credits/:id/settle",
     {
-      preHandler: [requirePermission(ACTIONS.OWNER_ONLY)],
+      preHandler: [
+        requireAnyPermission([ACTIONS.OWNER_ONLY, ACTIONS.CREDIT_SETTLE]),
+      ],
     },
     ownerSettleCredit,
   );
