@@ -16,6 +16,8 @@ const { creditPayments } = require("../db/schema/credit_payments.schema");
 const {
   creditInstallments,
 } = require("../db/schema/credit_installments.schema");
+const { saleItems } = require("../db/schema/sale_items.schema");
+const { inventoryBalances } = require("../db/schema/inventory.schema");
 
 function normMethod(v) {
   const out = String(v == null ? "" : v)
@@ -362,6 +364,75 @@ function buildCollectionMessage({
   };
 }
 
+async function restoreSaleInventoryForRejectedCredit({
+  tx,
+  locationId,
+  saleId,
+}) {
+  const items = await tx
+    .select({
+      productId: saleItems.productId,
+      qty: saleItems.qty,
+    })
+    .from(saleItems)
+    .where(eq(saleItems.saleId, Number(saleId)));
+
+  if (!items.length) {
+    return { restored: false, restoredLines: 0 };
+  }
+
+  for (const item of items) {
+    const productId = Number(item.productId);
+    const qty = Number(item.qty || 0);
+
+    if (!Number.isInteger(productId) || productId <= 0) continue;
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+
+    await tx
+      .insert(inventoryBalances)
+      .values({
+        locationId,
+        productId,
+        qtyOnHand: 0,
+        updatedAt: new Date(),
+      })
+      .onConflictDoNothing();
+
+    const balanceRows = await tx
+      .select()
+      .from(inventoryBalances)
+      .where(
+        and(
+          eq(inventoryBalances.locationId, locationId),
+          eq(inventoryBalances.productId, productId),
+        ),
+      );
+
+    const balance = balanceRows[0];
+    const currentQty = Number(balance?.qtyOnHand || 0) || 0;
+    const nextQty = currentQty + qty;
+
+    if (balance?.id) {
+      await tx
+        .update(inventoryBalances)
+        .set({
+          qtyOnHand: nextQty,
+          updatedAt: new Date(),
+        })
+        .where(eq(inventoryBalances.id, balance.id));
+    } else {
+      await tx.insert(inventoryBalances).values({
+        locationId,
+        productId,
+        qtyOnHand: nextQty,
+        updatedAt: new Date(),
+      });
+    }
+  }
+
+  return { restored: true, restoredLines: items.length };
+}
+
 async function createCredit({
   locationId,
   sellerId,
@@ -605,6 +676,12 @@ async function decideCredit({
     const creditMode = normCreditMode(credit.creditMode);
 
     if (dec === "REJECT") {
+      const restoreResult = await restoreSaleInventoryForRejectedCredit({
+        tx,
+        locationId,
+        saleId: credit.saleId,
+      });
+
       await tx
         .update(credits)
         .set({
@@ -618,7 +695,7 @@ async function decideCredit({
       await tx
         .update(sales)
         .set({
-          status: "FULFILLED",
+          status: "DRAFT",
           paymentMethod: null,
           updatedAt: now,
         })
@@ -632,12 +709,15 @@ async function decideCredit({
         action: AUDIT.CREDIT_REJECT,
         entity: "credit",
         entityId: id,
-        description: "Credit request rejected",
+        description: "Credit request rejected and stock restored",
         meta: {
           saleId: credit.saleId,
           note: cleanNote,
           creditMode,
-          message: "Credit request rejected",
+          inventoryRestored: !!restoreResult?.restored,
+          restoredLines: Number(restoreResult?.restoredLines || 0),
+          saleStatusAfterReject: "DRAFT",
+          message: "Credit request rejected and stock restored",
         },
       });
 
@@ -648,8 +728,8 @@ async function decideCredit({
         type: "CREDIT_REJECTED",
         title: `Credit rejected (Sale #${credit.saleId})`,
         body: cleanNote
-          ? `Credit request rejected. Reason: ${cleanNote}`
-          : "Credit request rejected.",
+          ? `Credit request rejected. Reason: ${cleanNote}. Stock was returned to inventory.`
+          : "Credit request rejected. Stock was returned to inventory.",
         priority: "normal",
         entity: "credit",
         entityId: Number(id),
@@ -663,8 +743,12 @@ async function decideCredit({
         status: "REJECTED",
         statusLabel: buildCreditStatusLabel("REJECTED", creditMode),
         saleId: Number(credit.saleId),
-        message: "Credit request rejected",
-        detailMessage: "Credit request rejected",
+        saleStatus: "DRAFT",
+        inventoryRestored: !!restoreResult?.restored,
+        restoredLines: Number(restoreResult?.restoredLines || 0),
+        message: "Credit request rejected and stock restored",
+        detailMessage:
+          "Credit request rejected and stock restored. Sale returned to draft state.",
       };
     }
 

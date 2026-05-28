@@ -6,6 +6,8 @@ const {
   listOwnerPayments,
   getOwnerPaymentsSummary,
   getOwnerPaymentsBreakdown,
+  listOwnerLoans,
+  voidOwnerLoan,
 } = require("../controllers/ownerPaymentsController");
 
 async function ownerPaymentsRoutes(app) {
@@ -25,6 +27,18 @@ async function ownerPaymentsRoutes(app) {
     "/owner/payments/breakdown",
     { preHandler: [requirePermission(ACTIONS.OWNER_PAYMENTS_VIEW)] },
     getOwnerPaymentsBreakdown,
+  );
+
+  app.get(
+    "/owner/payments/owner-loans",
+    { preHandler: [requirePermission(ACTIONS.OWNER_PAYMENTS_VIEW)] },
+    listOwnerLoans,
+  );
+
+  app.post(
+    "/owner/payments/owner-loans/:id/void",
+    { preHandler: [requirePermission(ACTIONS.OWNER_PAYMENTS_VIEW)] },
+    voidOwnerLoan,
   );
 }
 

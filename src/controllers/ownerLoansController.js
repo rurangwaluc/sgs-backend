@@ -82,6 +82,7 @@ function sendServiceError(request, reply, error, logMessage) {
 async function listOwnerLoansHandler(request, reply) {
   try {
     const loans = await listOwnerLoans({
+      actorUser: request.user || null,
       locationId: resolveScopedLocationId(request),
       q: cleanStr(request.query?.q),
       customerId: toInt(request.query?.customerId, null),
@@ -121,6 +122,7 @@ async function getOwnerLoanHandler(request, reply) {
 
     const result = await getOwnerLoan({
       id,
+      actorUser: request.user || null,
       locationId: resolveScopedLocationId(request),
     });
 
@@ -172,10 +174,7 @@ async function updateOwnerLoanHandler(request, reply) {
     const loan = await updateOwnerLoan({
       id,
       actorUser: request.user || null,
-      payload: {
-        ...(request.body || {}),
-        locationId: resolveScopedLocationId(request),
-      },
+      payload: request.body || {},
     });
 
     return reply.send({
@@ -205,10 +204,7 @@ async function createOwnerLoanRepaymentHandler(request, reply) {
     const result = await createOwnerLoanRepayment({
       id,
       actorUser: request.user || null,
-      payload: {
-        ...(request.body || {}),
-        locationId: resolveScopedLocationId(request),
-      },
+      payload: request.body || {},
     });
 
     return reply.status(201).send({
@@ -238,10 +234,7 @@ async function voidOwnerLoanHandler(request, reply) {
     const result = await voidOwnerLoan({
       id,
       actorUser: request.user || null,
-      payload: {
-        ...(request.body || {}),
-        locationId: resolveScopedLocationId(request),
-      },
+      payload: request.body || {},
     });
 
     return reply.send({
@@ -261,6 +254,7 @@ async function voidOwnerLoanHandler(request, reply) {
 async function ownerLoanSummaryHandler(request, reply) {
   try {
     const summary = await ownerLoanSummary({
+      actorUser: request.user || null,
       locationId: resolveScopedLocationId(request),
       status: cleanStr(request.query?.status),
       receiverType: cleanStr(request.query?.receiverType),

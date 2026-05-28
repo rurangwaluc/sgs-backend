@@ -685,8 +685,234 @@ async function getOwnerPaymentsBreakdown({
   };
 }
 
+function normalizeOwnerLoanRow(r) {
+  if (!r) return null;
+
+  const principalAmount =
+    Number(r.principalAmount ?? r.principal_amount ?? 0) || 0;
+  const repaidAmount = Number(r.repaidAmount ?? r.repaid_amount ?? 0) || 0;
+
+  return {
+    id: toInt(r.id, null),
+    locationId: toInt(r.locationId ?? r.location_id, null),
+    locationName: r.locationName ?? r.location_name ?? null,
+    locationCode: r.locationCode ?? r.location_code ?? null,
+    customerId: toInt(r.customerId ?? r.customer_id, null),
+    customerName: r.customerName ?? r.customer_name ?? null,
+    customerPhone: r.customerPhone ?? r.customer_phone ?? null,
+    receiverName: r.receiverName ?? r.receiver_name ?? null,
+    principalAmount,
+    repaidAmount,
+    remainingAmount: Math.max(0, principalAmount - repaidAmount),
+    status: String(r.status || "OPEN").toUpperCase(),
+    method: r.method ?? r.disbursement_method ?? null,
+    reference: r.reference ?? null,
+    note: r.note ?? null,
+    disbursedAt: r.disbursedAt ?? r.disbursed_at ?? null,
+    createdAt: r.createdAt ?? r.created_at ?? null,
+    createdByUserId: toInt(r.createdByUserId ?? r.created_by_user_id, null),
+    createdByName: r.createdByName ?? r.created_by_name ?? null,
+  };
+}
+
+async function listOwnerLoans({
+  locationId,
+  status,
+  q,
+  limit = 50,
+  offset = 0,
+}) {
+  const locId = toInt(locationId, null);
+  const lim = clampLimit(limit, 50, 200);
+  const off = clampOffset(offset);
+  const statusValue = String(status || "")
+    .trim()
+    .toUpperCase();
+  const qValue = String(q || "").trim();
+
+  const whereStatus = statusValue
+    ? sql`AND UPPER(COALESCE(ol.status::text, 'OPEN')) = ${statusValue}`
+    : sql``;
+  const whereQ = qValue
+    ? sql`AND (
+        CAST(ol.id AS text) ILIKE ${`%${qValue}%`}
+        OR COALESCE(ol.receiver_name, '') ILIKE ${`%${qValue}%`}
+        OR COALESCE(ol.reference, '') ILIKE ${`%${qValue}%`}
+        OR COALESCE(ol.note, '') ILIKE ${`%${qValue}%`}
+        OR COALESCE(c.name, '') ILIKE ${`%${qValue}%`}
+        OR COALESCE(c.phone, '') ILIKE ${`%${qValue}%`}
+        OR COALESCE(l.name, '') ILIKE ${`%${qValue}%`}
+        OR COALESCE(l.code, '') ILIKE ${`%${qValue}%`}
+      )`
+    : sql``;
+
+  const rowsRes = await db.execute(sql`
+    SELECT
+      ol.id,
+      ol.location_id as "locationId",
+      l.name as "locationName",
+      l.code as "locationCode",
+      ol.customer_id as "customerId",
+      c.name as "customerName",
+      c.phone as "customerPhone",
+      ol.receiver_name as "receiverName",
+      ol.principal_amount as "principalAmount",
+      ol.repaid_amount as "repaidAmount",
+      ol.status,
+      ol.disbursement_method as "method",
+      ol.reference,
+      ol.note,
+      ol.disbursed_at as "disbursedAt",
+      ol.created_at as "createdAt",
+      ol.created_by_user_id as "createdByUserId",
+      u.name as "createdByName"
+    FROM owner_loans ol
+    JOIN locations l
+      ON l.id = ol.location_id
+    LEFT JOIN customers c
+      ON c.id = ol.customer_id
+    LEFT JOIN users u
+      ON u.id = ol.created_by_user_id
+    WHERE 1 = 1
+      ${locId ? sql`AND ol.location_id = ${locId}` : sql``}
+      ${whereStatus}
+      ${whereQ}
+    ORDER BY ol.id DESC
+    LIMIT ${lim}
+    OFFSET ${off}
+  `);
+
+  const summaryRes = await db.execute(sql`
+    SELECT
+      COUNT(*)::int as "count",
+      COUNT(*) FILTER (WHERE UPPER(COALESCE(status::text, 'OPEN')) = 'OPEN')::int as "openCount",
+      COUNT(*) FILTER (WHERE UPPER(COALESCE(status::text, 'OPEN')) = 'VOID')::int as "voidCount",
+      COALESCE(SUM(principal_amount), 0)::bigint as "principalAmount",
+      COALESCE(SUM(repaid_amount), 0)::bigint as "repaidAmount",
+      COALESCE(SUM(GREATEST(principal_amount - repaid_amount, 0)), 0)::bigint as "remainingAmount"
+    FROM owner_loans ol
+    WHERE 1 = 1
+      ${locId ? sql`AND ol.location_id = ${locId}` : sql``}
+      ${whereStatus}
+  `);
+
+  const rows = rowsOf(rowsRes).map(normalizeOwnerLoanRow).filter(Boolean);
+  const s = rowsOf(summaryRes)[0] || {};
+
+  return {
+    rows,
+    summary: {
+      count: Number(s.count || 0),
+      openCount: Number(s.openCount || 0),
+      voidCount: Number(s.voidCount || 0),
+      principalAmount: Number(s.principalAmount || 0),
+      repaidAmount: Number(s.repaidAmount || 0),
+      remainingAmount: Number(s.remainingAmount || 0),
+    },
+    pagination: {
+      limit: lim,
+      offset: off,
+      count: rows.length,
+    },
+  };
+}
+
+async function voidOwnerLoan({ loanId, actorUserId, reason }) {
+  const id = toInt(loanId, null);
+  const actorId = toInt(actorUserId, null);
+  const cleanReason = String(reason || "")
+    .trim()
+    .slice(0, 300);
+
+  if (!id || id <= 0) {
+    const err = new Error("Valid owner loan id is required");
+    err.code = "BAD_LOAN_ID";
+    throw err;
+  }
+
+  if (!actorId || actorId <= 0) {
+    const err = new Error("Valid actor user is required");
+    err.code = "BAD_ACTOR";
+    throw err;
+  }
+
+  if (!cleanReason || cleanReason.length < 3) {
+    const err = new Error("Void reason is required");
+    err.code = "BAD_VOID_REASON";
+    throw err;
+  }
+
+  return db.transaction(async (tx) => {
+    const foundRes = await tx.execute(sql`
+      SELECT *
+      FROM owner_loans
+      WHERE id = ${id}
+      LIMIT 1
+    `);
+
+    const found = rowsOf(foundRes)[0];
+
+    if (!found) {
+      const err = new Error("Owner loan not found");
+      err.code = "OWNER_LOAN_NOT_FOUND";
+      throw err;
+    }
+
+    const currentStatus = String(found.status || "OPEN").toUpperCase();
+    const repaidAmount =
+      Number(found.repaid_amount ?? found.repaidAmount ?? 0) || 0;
+
+    if (currentStatus === "VOID") {
+      return normalizeOwnerLoanRow(found);
+    }
+
+    if (repaidAmount > 0) {
+      const err = new Error("Owner loan with repayments cannot be voided");
+      err.code = "OWNER_LOAN_NOT_VOIDABLE";
+      throw err;
+    }
+
+    const nextNote =
+      `${String(found.note || "").trim()}\n[VOIDED] ${cleanReason}`.trim();
+
+    const updatedRes = await tx.execute(sql`
+      UPDATE owner_loans
+      SET
+        status = 'VOID',
+        note = ${nextNote}
+      WHERE id = ${id}
+      RETURNING *
+    `);
+
+    const updated = rowsOf(updatedRes)[0];
+
+    await tx.execute(sql`
+      INSERT INTO audit_logs (
+        location_id,
+        user_id,
+        action,
+        entity,
+        entity_id,
+        description
+      )
+      VALUES (
+        ${Number(found.location_id || found.locationId)},
+        ${actorId},
+        'OWNER_LOAN_VOID',
+        'owner_loan',
+        ${id},
+        ${`Owner loan #${id} voided. Reason: ${cleanReason}`}
+      )
+    `);
+
+    return normalizeOwnerLoanRow(updated);
+  });
+}
+
 module.exports = {
   listOwnerPayments,
   getOwnerPaymentsSummary,
   getOwnerPaymentsBreakdown,
+  listOwnerLoans,
+  voidOwnerLoan,
 };

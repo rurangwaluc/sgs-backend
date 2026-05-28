@@ -73,6 +73,32 @@ function normalizeStatus(v) {
   return ALLOWED_STATUSES.has(s) ? s : "POSTED";
 }
 
+function normalizeRole(v) {
+  return String(v || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isOwner(role) {
+  return normalizeRole(role) === "owner";
+}
+
+function isAdmin(role) {
+  return normalizeRole(role) === "admin";
+}
+
+function isManager(role) {
+  return normalizeRole(role) === "manager";
+}
+
+function isAdminLike(role) {
+  return isOwner(role) || isAdmin(role);
+}
+
+function isPrivilegedLocationRole(role) {
+  return isOwner(role) || isAdmin(role) || isManager(role);
+}
+
 function parseExpenseDate(v) {
   if (v == null || v === "") return new Date();
   const d = v instanceof Date ? v : new Date(String(v));
@@ -260,9 +286,43 @@ function buildVoidLedgerNote({ expenseId, category, reason }) {
   return parts.join(" | ").slice(0, 500);
 }
 
+function assertVoidScope({
+  actorRole,
+  actorUserId,
+  actorLocationId,
+  expenseLocationId,
+  expenseCashierId,
+}) {
+  const role = normalizeRole(actorRole);
+
+  if (isOwner(role)) {
+    return;
+  }
+
+  if (
+    !actorLocationId ||
+    Number(actorLocationId) !== Number(expenseLocationId)
+  ) {
+    const err = new Error("Forbidden");
+    err.code = "FORBIDDEN";
+    throw err;
+  }
+
+  if (isAdmin(role) || isManager(role)) {
+    return;
+  }
+
+  if (Number(actorUserId) !== Number(expenseCashierId)) {
+    const err = new Error("Forbidden");
+    err.code = "FORBIDDEN";
+    throw err;
+  }
+}
+
 async function createExpense({
   locationId,
-  cashierId,
+  actorUserId,
+  actorRole,
   cashSessionId,
   category,
   amount,
@@ -276,7 +336,7 @@ async function createExpense({
 }) {
   return db.transaction(async (tx) => {
     const locId = toInt(locationId, null);
-    const actorId = toInt(cashierId, null);
+    const actorId = toInt(actorUserId, null);
     const safeAmount = toInt(amount, 0);
 
     if (!locId) {
@@ -286,8 +346,8 @@ async function createExpense({
     }
 
     if (!actorId) {
-      const err = new Error("cashierId is required");
-      err.code = "BAD_CASHIER";
+      const err = new Error("actorUserId is required");
+      err.code = "BAD_ACTOR";
       throw err;
     }
 
@@ -317,7 +377,7 @@ async function createExpense({
       actorId,
       requestedSessionId: cashSessionId,
       method: safeMethod,
-      allowMissingCashSession,
+      allowMissingCashSession: allowMissingCashSession === true,
     });
 
     const [created] = await tx
@@ -387,6 +447,7 @@ async function createExpense({
         expenseDate: safeExpenseDate.toISOString(),
         payeeName: safePayeeName,
         attachmentsCount: safeAttachments.length,
+        actorRole: normalizeRole(actorRole),
       },
     });
 
@@ -402,10 +463,17 @@ async function createExpense({
   });
 }
 
-async function voidExpense({ expenseId, actorUserId, reason }) {
+async function voidExpense({
+  expenseId,
+  actorUserId,
+  actorRole,
+  actorLocationId,
+  reason,
+}) {
   return db.transaction(async (tx) => {
     const safeExpenseId = toInt(expenseId, null);
     const safeActorUserId = toInt(actorUserId, null);
+    const safeActorLocationId = toInt(actorLocationId, null);
     const safeReason = cleanText(reason, 300);
 
     if (!safeExpenseId) {
@@ -457,6 +525,14 @@ async function voidExpense({ expenseId, actorUserId, reason }) {
       err.code = "EXPENSE_NOT_FOUND";
       throw err;
     }
+
+    assertVoidScope({
+      actorRole,
+      actorUserId: safeActorUserId,
+      actorLocationId: safeActorLocationId,
+      expenseLocationId: found.locationId,
+      expenseCashierId: found.cashierId,
+    });
 
     const currentStatus = normalizeStatus(found.status);
     if (currentStatus !== "POSTED") {
@@ -510,6 +586,7 @@ async function voidExpense({ expenseId, actorUserId, reason }) {
         amount: Number(found.amount),
         method: normalizeMethod(found.method),
         reason: safeReason,
+        actorRole: normalizeRole(actorRole),
       },
     });
 

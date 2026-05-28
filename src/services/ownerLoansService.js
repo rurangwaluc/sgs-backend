@@ -76,6 +76,16 @@ function normalizeStatus(v, fallback = "OPEN") {
   return OWNER_LOAN_STATUSES.includes(s) ? s : fallback;
 }
 
+function normalizeRole(role) {
+  return String(role || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isOwnerRole(actorUser) {
+  return normalizeRole(actorUser?.role) === "owner";
+}
+
 function deriveLoanStatus({ principalAmount, repaidAmount, requestedStatus }) {
   const principal = moneyInt(principalAmount);
   const repaid = moneyInt(repaidAmount);
@@ -113,18 +123,40 @@ function requireValidLoanId(id) {
   return loanId;
 }
 
-function resolveScopedLoanLocationId(actorUser, payload = {}, fallback = null) {
+function resolveOwnerLoanScope({
+  actorUser,
+  locationId = null,
+  payload = {},
+  fallback = null,
+} = {}) {
+  const roleOwner = isOwnerRole(actorUser);
+
   const payloadLocationId = toInt(payload?.locationId, null);
-  if (payloadLocationId && payloadLocationId > 0) {
-    return requireValidLocationId(payloadLocationId);
-  }
-
+  const explicitLocationId = toInt(locationId, null);
   const fallbackLocationId = toInt(fallback, null);
-  if (fallbackLocationId && fallbackLocationId > 0) {
-    return requireValidLocationId(fallbackLocationId);
+  const actorLocationId = toInt(actorUser?.locationId, null);
+
+  const selectedLocationId =
+    payloadLocationId ||
+    explicitLocationId ||
+    fallbackLocationId ||
+    actorLocationId ||
+    null;
+
+  if (roleOwner) {
+    return {
+      isOwner: true,
+      locationId:
+        selectedLocationId && selectedLocationId > 0
+          ? requireValidLocationId(selectedLocationId)
+          : null,
+    };
   }
 
-  return requireValidLocationId(actorUser?.locationId);
+  return {
+    isOwner: false,
+    locationId: requireValidLocationId(selectedLocationId),
+  };
 }
 
 async function getCustomerOrThrow({ customerId, locationId, tx = db }) {
@@ -172,14 +204,30 @@ async function getCustomerOrThrow({ customerId, locationId, tx = db }) {
   return row;
 }
 
-async function getScopedLoanOrThrow({ loanId, locationId, tx = db }) {
+async function getScopedLoanOrThrow({
+  loanId,
+  actorUser = null,
+  locationId = null,
+  tx = db,
+}) {
   const id = requireValidLoanId(loanId);
-  const lid = requireValidLocationId(locationId);
+  const scope = resolveOwnerLoanScope({
+    actorUser,
+    locationId,
+  });
+
+  const where = [eq(ownerLoans.id, id)];
+
+  if (!scope.isOwner) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  } else if (scope.locationId) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  }
 
   const [row] = await tx
     .select()
     .from(ownerLoans)
-    .where(and(eq(ownerLoans.id, id), eq(ownerLoans.locationId, lid)));
+    .where(and(...where));
 
   if (!row) {
     const err = new Error("Owner loan not found");
@@ -245,6 +293,7 @@ async function assertEnoughAvailableBalance({
     );
     err.statusCode = 409;
     err.meta = {
+      code: "INSUFFICIENT_BRANCH_METHOD_BALANCE",
       availableBalance,
       requestedAmount,
       locationId,
@@ -311,7 +360,8 @@ async function createCashLedgerEntryIfPossible({
 }
 
 async function listOwnerLoans({
-  locationId,
+  actorUser = null,
+  locationId = null,
   q,
   customerId,
   receiverType,
@@ -323,11 +373,21 @@ async function listOwnerLoans({
   limit = 50,
   offset = 0,
 }) {
-  const lid = requireValidLocationId(locationId);
+  const scope = resolveOwnerLoanScope({
+    actorUser,
+    locationId,
+  });
+
   const lim = Math.max(1, Math.min(100, toInt(limit, 50) || 50));
   const off = Math.max(0, toInt(offset, 0) || 0);
 
-  const where = [eq(ownerLoans.locationId, lid)];
+  const where = [];
+
+  if (!scope.isOwner) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  } else if (scope.locationId) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  }
 
   const search = cleanStr(q);
   if (search) {
@@ -431,7 +491,7 @@ async function listOwnerLoans({
     })
     .from(ownerLoans)
     .leftJoin(customers, eq(customers.id, ownerLoans.customerId))
-    .where(and(...where))
+    .where(where.length ? and(...where) : undefined)
     .orderBy(desc(ownerLoans.id))
     .limit(lim)
     .offset(off);
@@ -439,13 +499,24 @@ async function listOwnerLoans({
   return rows || [];
 }
 
-async function getOwnerLoan({ id, locationId }) {
+async function getOwnerLoan({ id, actorUser = null, locationId = null }) {
   const loanId = requireValidLoanId(id);
-  const lid = requireValidLocationId(locationId);
+  const scope = resolveOwnerLoanScope({
+    actorUser,
+    locationId,
+  });
 
   const selectedCustomerEmail = customers.email
     ? { customerEmail: customers.email }
     : {};
+
+  const where = [eq(ownerLoans.id, loanId)];
+
+  if (!scope.isOwner) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  } else if (scope.locationId) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  }
 
   const [loan] = await db
     .select({
@@ -500,7 +571,7 @@ async function getOwnerLoan({ id, locationId }) {
     })
     .from(ownerLoans)
     .leftJoin(customers, eq(customers.id, ownerLoans.customerId))
-    .where(and(eq(ownerLoans.id, loanId), eq(ownerLoans.locationId, lid)));
+    .where(and(...where));
 
   if (!loan) {
     const err = new Error("Owner loan not found");
@@ -508,15 +579,18 @@ async function getOwnerLoan({ id, locationId }) {
     throw err;
   }
 
+  const repaymentWhere = [eq(ownerLoanRepayments.ownerLoanId, loanId)];
+
+  if (!scope.isOwner) {
+    repaymentWhere.push(eq(ownerLoanRepayments.locationId, scope.locationId));
+  } else if (scope.locationId) {
+    repaymentWhere.push(eq(ownerLoanRepayments.locationId, scope.locationId));
+  }
+
   const repayments = await db
     .select()
     .from(ownerLoanRepayments)
-    .where(
-      and(
-        eq(ownerLoanRepayments.ownerLoanId, loanId),
-        eq(ownerLoanRepayments.locationId, lid),
-      ),
-    )
+    .where(and(...repaymentWhere))
     .orderBy(desc(ownerLoanRepayments.id));
 
   return {
@@ -536,11 +610,13 @@ async function createOwnerLoan({ actorUser, payload }) {
   }
 
   const data = parsed.data;
-  const locationId =
-    data.locationId != null
-      ? Number(data.locationId)
-      : Number(actorUser?.locationId);
 
+  const scope = resolveOwnerLoanScope({
+    actorUser,
+    locationId: data.locationId,
+  });
+
+  const locationId = scope.locationId;
   requireValidLocationId(locationId);
 
   let customer = null;
@@ -662,13 +738,12 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
   }
 
   const data = parsed.data;
-  const locationId = resolveScopedLoanLocationId(
-    actorUser,
-    data,
-    actorUser?.locationId,
-  );
 
-  const existing = await getScopedLoanOrThrow({ loanId, locationId });
+  const existing = await getScopedLoanOrThrow({
+    loanId,
+    actorUser,
+    locationId: data.locationId ?? actorUser?.locationId ?? null,
+  });
 
   const currentStatus = normalizeStatus(existing.status, "OPEN");
   if (currentStatus === "REPAID" || currentStatus === "VOID") {
@@ -836,9 +911,7 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
       ...(nextStatus !== undefined ? { status: nextStatus } : {}),
       updatedAt: sql`now()`,
     })
-    .where(
-      and(eq(ownerLoans.id, loanId), eq(ownerLoans.locationId, locationId)),
-    )
+    .where(eq(ownerLoans.id, loanId))
     .returning();
 
   if (!row) {
@@ -882,12 +955,6 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
   }
 
   const data = parsed.data;
-  const locationId = resolveScopedLoanLocationId(
-    actorUser,
-    data,
-    actorUser?.locationId,
-  );
-
   const amount = moneyInt(data.amount);
 
   if (!Number.isInteger(amount) || amount <= 0) {
@@ -899,7 +966,13 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
   const createdByUserId = actorUser?.id ? Number(actorUser.id) : null;
 
   const result = await db.transaction(async (tx) => {
-    const loan = await getScopedLoanOrThrow({ loanId, locationId, tx });
+    const loan = await getScopedLoanOrThrow({
+      loanId,
+      actorUser,
+      locationId: data.locationId ?? actorUser?.locationId ?? null,
+      tx,
+    });
+
     const currentStatus = normalizeStatus(loan.status, "OPEN");
 
     if (currentStatus === "VOID") {
@@ -924,10 +997,12 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
       throw err;
     }
 
+    const repaymentLocationId = Number(loan.locationId);
+
     const [repayment] = await tx
       .insert(ownerLoanRepayments)
       .values({
-        locationId,
+        locationId: repaymentLocationId,
         ownerLoanId: loanId,
         amount,
         method: normalizeMethod(data.method, "OTHER"),
@@ -952,13 +1027,11 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
         status: newStatus,
         updatedAt: sql`now()`,
       })
-      .where(
-        and(eq(ownerLoans.id, loanId), eq(ownerLoans.locationId, locationId)),
-      );
+      .where(eq(ownerLoans.id, loanId));
 
     await createCashLedgerEntryIfPossible({
       tx,
-      locationId,
+      locationId: repaymentLocationId,
       actorUser,
       amount,
       direction: "IN",
@@ -985,11 +1058,12 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
         balanceAmount: buildLoanBalance(principalAmount, newRepaidAmount),
         status: newStatus,
       },
+      locationId: repaymentLocationId,
     };
   });
 
   await safeLogAudit({
-    locationId,
+    locationId: result.locationId,
     userId: createdByUserId,
     action: AUDIT.OWNER_LOAN_REPAYMENT_CREATE || "OWNER_LOAN_REPAYMENT_CREATE",
     entity: "owner_loan",
@@ -1017,13 +1091,12 @@ async function voidOwnerLoan({ id, actorUser, payload }) {
   }
 
   const data = parsed.data;
-  const locationId = resolveScopedLoanLocationId(
-    actorUser,
-    data,
-    actorUser?.locationId,
-  );
 
-  const loan = await getScopedLoanOrThrow({ loanId, locationId });
+  const loan = await getScopedLoanOrThrow({
+    loanId,
+    actorUser,
+    locationId: data.locationId ?? actorUser?.locationId ?? null,
+  });
 
   if (moneyInt(loan.repaidAmount) > 0) {
     const err = new Error(
@@ -1044,9 +1117,7 @@ async function voidOwnerLoan({ id, actorUser, payload }) {
       ),
       updatedAt: sql`now()`,
     })
-    .where(
-      and(eq(ownerLoans.id, loanId), eq(ownerLoans.locationId, locationId)),
-    )
+    .where(eq(ownerLoans.id, loanId))
     .returning();
 
   if (!row) {
@@ -1056,7 +1127,7 @@ async function voidOwnerLoan({ id, actorUser, payload }) {
   }
 
   await safeLogAudit({
-    locationId,
+    locationId: row.locationId,
     userId: actorUser?.id || null,
     action: AUDIT.OWNER_LOAN_VOID || "OWNER_LOAN_VOID",
     entity: "owner_loan",
@@ -1074,12 +1145,24 @@ async function voidOwnerLoan({ id, actorUser, payload }) {
   return { loan: row };
 }
 
-async function ownerLoanSummary({ locationId, status, receiverType }) {
-  const lid = requireValidLocationId(locationId);
-  const where = [
-    eq(ownerLoans.locationId, lid),
-    sql`${ownerLoans.status} <> 'VOID'`,
-  ];
+async function ownerLoanSummary({
+  actorUser = null,
+  locationId = null,
+  status,
+  receiverType,
+}) {
+  const scope = resolveOwnerLoanScope({
+    actorUser,
+    locationId,
+  });
+
+  const where = [sql`${ownerLoans.status} <> 'VOID'`];
+
+  if (!scope.isOwner) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  } else if (scope.locationId) {
+    where.push(eq(ownerLoans.locationId, scope.locationId));
+  }
 
   if (status) {
     where.push(eq(ownerLoans.status, normalizeStatus(status)));

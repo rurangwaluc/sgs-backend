@@ -14,6 +14,26 @@ function normalizeRole(role) {
     .toLowerCase();
 }
 
+function isOwner(role) {
+  return normalizeRole(role) === "owner";
+}
+
+function isAdmin(role) {
+  return normalizeRole(role) === "admin";
+}
+
+function isManager(role) {
+  return normalizeRole(role) === "manager";
+}
+
+function isAdminLike(role) {
+  return isOwner(role) || isAdmin(role);
+}
+
+function isPrivilegedLocationViewer(role) {
+  return isOwner(role) || isAdmin(role) || isManager(role);
+}
+
 function parseIsoDateStart(value) {
   const s = String(value || "").trim();
   if (!s) return null;
@@ -33,6 +53,14 @@ function parseIsoDateEndExclusive(value) {
   return d;
 }
 
+function resolveCreateLocationId({ role, bodyLocationId, userLocationId }) {
+  if (isOwner(role)) {
+    return bodyLocationId || userLocationId || null;
+  }
+
+  return userLocationId || null;
+}
+
 async function createExpense(request, reply) {
   const parsed = createExpenseSchema.safeParse(request.body || {});
   if (!parsed.success) {
@@ -43,17 +71,23 @@ async function createExpense(request, reply) {
   }
 
   const role = normalizeRole(request.user?.role);
-  const isOwnerLike =
-    role === "owner" || role === "admin" || role === "manager";
+  const effectiveLocationId = resolveCreateLocationId({
+    role,
+    bodyLocationId: parsed.data.locationId,
+    userLocationId: request.user?.locationId,
+  });
 
-  const effectiveLocationId = isOwnerLike
-    ? parsed.data.locationId || request.user.locationId
-    : request.user.locationId;
+  if (!effectiveLocationId) {
+    return reply.status(400).send({
+      error: "locationId is required",
+    });
+  }
 
   try {
     const expense = await expensesService.createExpense({
       locationId: effectiveLocationId,
-      cashierId: request.user.id,
+      actorUserId: request.user.id,
+      actorRole: role,
       cashSessionId: parsed.data.cashSessionId,
       category: parsed.data.category,
       amount: parsed.data.amount,
@@ -63,7 +97,7 @@ async function createExpense(request, reply) {
       reference: parsed.data.reference,
       note: parsed.data.note,
       attachments: parsed.data.attachments || [],
-      allowMissingCashSession: isOwnerLike,
+      allowMissingCashSession: isAdminLike(role),
     });
 
     return reply.send({
@@ -81,7 +115,7 @@ async function createExpense(request, reply) {
 
     if (
       e.code === "BAD_LOCATION" ||
-      e.code === "BAD_CASHIER" ||
+      e.code === "BAD_ACTOR" ||
       e.code === "BAD_AMOUNT" ||
       e.code === "BAD_EXPENSE_DATE" ||
       e.code === "BAD_CATEGORY" ||
@@ -116,6 +150,8 @@ async function voidExpense(request, reply) {
     const expense = await expensesService.voidExpense({
       expenseId: paramsParsed.data.id,
       actorUserId: request.user.id,
+      actorRole: normalizeRole(request.user?.role),
+      actorLocationId: request.user?.locationId,
       reason: bodyParsed.data.reason,
     });
 
@@ -130,6 +166,10 @@ async function voidExpense(request, reply) {
 
     if (e.code === "EXPENSE_NOT_VOIDABLE") {
       return reply.status(409).send({ error: e.message });
+    }
+
+    if (e.code === "FORBIDDEN") {
+      return reply.status(403).send({ error: e.message });
     }
 
     if (
@@ -155,18 +195,26 @@ async function listExpenses(request, reply) {
   }
 
   const role = normalizeRole(request.user?.role);
-  const isOwnerLike =
-    role === "owner" || role === "admin" || role === "manager";
+
+  let effectiveLocationId = null;
+  let effectiveCashierId = null;
+
+  if (isOwner(role)) {
+    effectiveLocationId = parsed.data.locationId ?? null;
+    effectiveCashierId = parsed.data.cashierId ?? null;
+  } else if (isPrivilegedLocationViewer(role)) {
+    effectiveLocationId = request.user?.locationId ?? null;
+    effectiveCashierId = parsed.data.cashierId ?? null;
+  } else {
+    effectiveLocationId = request.user?.locationId ?? null;
+    effectiveCashierId = request.user?.id ?? null;
+  }
 
   try {
     const result = await expensesService.listExpenses({
-      locationId: isOwnerLike
-        ? (parsed.data.locationId ?? null)
-        : request.user.locationId,
+      locationId: effectiveLocationId,
       cashSessionId: parsed.data.cashSessionId ?? null,
-      cashierId: isOwnerLike
-        ? (parsed.data.cashierId ?? null)
-        : request.user.id,
+      cashierId: effectiveCashierId,
       category: parsed.data.category ?? null,
       method: parsed.data.method ?? null,
       status: parsed.data.status ?? null,
