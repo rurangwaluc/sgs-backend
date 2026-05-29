@@ -465,6 +465,11 @@ async function listSales({ locationId, filters }) {
       location,
       credit,
       itemsPreview,
+      items: itemsPreview,
+      itemsCount: itemsPreview.reduce((sum, item) => sum + toInt(item?.qty, 0), 0),
+      itemsSummary: itemsPreview
+        .map((item) => `${item?.productName || "Item"} ×${toInt(item?.qty, 0) || 1}`)
+        .join(", "),
     };
   });
 }
