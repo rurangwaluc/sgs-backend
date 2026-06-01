@@ -468,6 +468,113 @@ async function createSale({
   });
 }
 
+async function updateSale({
+  locationId,
+  sellerId,
+  saleId,
+  customerId,
+  customerName,
+  customerPhone,
+  note,
+  items,
+  discountPercent,
+  discountAmount,
+}) {
+  return db.transaction(async (tx) => {
+    const saleRows = await tx
+      .select()
+      .from(sales)
+      .where(and(eq(sales.id, saleId), eq(sales.locationId, locationId)));
+
+    const existingSale = saleRows[0];
+
+    if (!existingSale) {
+      const err = new Error("Sale not found");
+      err.code = "NOT_FOUND";
+      throw err;
+    }
+
+    if (Number(existingSale.sellerId) !== Number(sellerId)) {
+      const err = new Error("Forbidden");
+      err.code = "FORBIDDEN";
+      throw err;
+    }
+
+    if (String(existingSale.status || "").toUpperCase() !== "DRAFT") {
+      const err = new Error("Sale is not editable");
+      err.code = "SALE_NOT_EDITABLE";
+      err.debug = {
+        currentStatus: existingSale.status,
+        editableOnlyWhen: "DRAFT",
+      };
+      throw err;
+    }
+
+    const recreated = await createSale({
+      locationId,
+      sellerId,
+      customerId,
+      customerName,
+      customerPhone,
+      note,
+      items,
+      discountPercent,
+      discountAmount,
+    });
+
+    await tx.delete(saleItems).where(eq(saleItems.saleId, saleId));
+
+    const newItems = await tx
+      .select()
+      .from(saleItems)
+      .where(eq(saleItems.saleId, recreated.id));
+
+    for (const item of newItems) {
+      await tx.insert(saleItems).values({
+        saleId,
+        productId: item.productId,
+        qty: item.qty,
+        baseUnitPrice: item.baseUnitPrice,
+        extraChargePerUnit: item.extraChargePerUnit,
+        unitPrice: item.unitPrice,
+        lineTotal: item.lineTotal,
+        priceAdjustmentReason: item.priceAdjustmentReason,
+        priceAdjustmentType: item.priceAdjustmentType,
+        priceAdjustedByUserId: item.priceAdjustedByUserId,
+        priceAdjustedAt: item.priceAdjustedAt,
+      });
+    }
+
+    await tx.delete(saleItems).where(eq(saleItems.saleId, recreated.id));
+    await tx.delete(sales).where(eq(sales.id, recreated.id));
+
+    const [updated] = await tx
+      .update(sales)
+      .set({
+        customerId: recreated.customerId,
+        customerName: recreated.customerName,
+        customerPhone: recreated.customerPhone,
+        totalAmount: recreated.totalAmount,
+        paymentMethod: null,
+        note: recreated.note,
+        updatedAt: new Date(),
+      })
+      .where(eq(sales.id, saleId))
+      .returning();
+
+    await tx.insert(auditLogs).values({
+      locationId,
+      userId: sellerId,
+      action: "SALE_UPDATE",
+      entity: "sale",
+      entityId: saleId,
+      description: `Sale #${saleId} edited while still DRAFT before stock release`,
+    });
+
+    return updated;
+  });
+}
+
 async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -786,4 +893,4 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
   });
 }
 
-module.exports = { createSale, fulfillSale, markSale, cancelSale };
+module.exports = { createSale, updateSale, fulfillSale, markSale, cancelSale };

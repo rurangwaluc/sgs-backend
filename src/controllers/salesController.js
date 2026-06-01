@@ -2,6 +2,7 @@
 
 const {
   createSaleSchema,
+  updateSaleSchema,
   markSaleSchema,
   cancelSaleSchema,
   fulfillSaleSchema,
@@ -152,6 +153,110 @@ async function createSale(request, reply) {
     }
 
     request.log.error({ err: e }, "createSale failed");
+    return reply.status(500).send({
+      error: "Internal Server Error",
+      debug: { code: e?.code },
+    });
+  }
+}
+
+async function updateSale(request, reply) {
+  const saleId = toSaleId(request.params);
+  if (!saleId) return reply.status(400).send({ error: "Invalid sale id" });
+
+  const parsed = updateSaleSchema.safeParse(request.body);
+
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  try {
+    const sale = await salesService.updateSale({
+      locationId: request.user.locationId,
+      sellerId: request.user.id,
+      saleId,
+
+      customerId: parsed.data.customerId,
+      customerName: parsed.data.customerName,
+      customerPhone: parsed.data.customerPhone,
+
+      note: parsed.data.note,
+      items: parsed.data.items,
+
+      discountPercent: parsed.data.discountPercent,
+      discountAmount: parsed.data.discountAmount,
+    });
+
+    return reply.send({ ok: true, sale });
+  } catch (e) {
+    if (e.code === "NOT_FOUND") {
+      return reply.status(404).send({ error: "Sale not found" });
+    }
+
+    if (e.code === "FORBIDDEN") {
+      return reply
+        .status(403)
+        .send({ error: "You can only edit your own sale" });
+    }
+
+    if (e.code === "SALE_NOT_EDITABLE") {
+      return reply.status(409).send({
+        error:
+          "This sale can no longer be edited because stock was already released",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "CUSTOMER_NOT_FOUND") {
+      return reply
+        .status(404)
+        .send({ error: "Customer not found", debug: e.debug });
+    }
+
+    if (e.code === "MISSING_CUSTOMER" || e.code === "MISSING_CUSTOMER_FIELDS") {
+      return reply.status(400).send({
+        error: e.message || "Customer name and phone are required",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "NO_ITEMS")
+      return reply.status(400).send({ error: "No items" });
+
+    if (e.code === "PRODUCT_NOT_FOUND") {
+      return reply
+        .status(404)
+        .send({ error: "Product not found", debug: e.debug });
+    }
+
+    if (e.code === "PRODUCT_INACTIVE") {
+      return reply
+        .status(409)
+        .send({ error: "Product is inactive", debug: e.debug });
+    }
+
+    if (e.code === "BAD_QTY") {
+      return reply.status(400).send({ error: "Invalid qty", debug: e.debug });
+    }
+
+    if (e.code === "DISCOUNT_TOO_HIGH" || e.code === "SALE_DISCOUNT_TOO_HIGH") {
+      return reply
+        .status(409)
+        .send({ error: "Discount exceeds allowed maximum", debug: e.debug });
+    }
+
+    if (e.code === "MISSING_PRICE_ADJUSTMENT_REASON") {
+      return reply.status(400).send({
+        error:
+          "Price adjustment reason is required when seller adds extra charge",
+        debug: e.debug,
+      });
+    }
+
+    request.log.error({ err: e }, "updateSale failed");
     return reply.status(500).send({
       error: "Internal Server Error",
       debug: { code: e?.code },
@@ -318,4 +423,4 @@ async function cancelSale(request, reply) {
   }
 }
 
-module.exports = { createSale, fulfillSale, markSale, cancelSale };
+module.exports = { createSale, updateSale, fulfillSale, markSale, cancelSale };

@@ -3,6 +3,7 @@ const { requirePermission } = require("../middleware/requirePermission");
 
 const {
   createSale,
+  updateSale,
   fulfillSale,
   markSale,
   cancelSale,
@@ -27,6 +28,15 @@ async function salesRoutes(app) {
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
     },
     createSale,
+  );
+  // ✅ UPDATE (Seller)
+  app.put(
+    "/sales/:id",
+    {
+      preHandler: [requirePermission(ACTIONS.SALE_CREATE)],
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    },
+    updateSale,
   );
 
   // ✅ FULFILL (Storekeeper) — DRAFT -> FULFILLED + inventory deduction
