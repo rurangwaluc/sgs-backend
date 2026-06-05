@@ -35,20 +35,6 @@ const pool = new Pool({
 
 const db = drizzle(pool);
 
-try {
-  const u = new URL(rawUrl);
-  console.log("DB connect (sanity):", {
-    host: u.hostname,
-    port: u.port,
-    database: u.pathname.replace("/", ""),
-    user: u.username,
-    ssl: env.PG_SSL,
-    rejectUnauthorized: env.PG_SSL_REJECT_UNAUTHORIZED,
-  });
-} catch {
-  // ignore
-}
-
 async function pingDb() {
   const client = await pool.connect();
   try {

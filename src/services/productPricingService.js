@@ -4,7 +4,6 @@ const { db } = require("../config/db");
 const { products } = require("../db/schema/products.schema");
 const { auditLogs } = require("../db/schema/audit_logs.schema");
 const { eq, and, asc } = require("drizzle-orm");
-const { sql } = require("drizzle-orm");
 
 async function getProducts({ locationId }) {
   if (!locationId) {
@@ -93,45 +92,6 @@ async function updatePricing({
     err.code = "BAD_CONTEXT";
     throw err;
   }
-
-  const currentDb = await db.execute(sql`
-    select
-      current_database() as db,
-      current_schema() as schema,
-      current_user as "user"
-  `);
-  console.log("APP DB IDENTITY:", currentDb.rows || currentDb);
-  console.log("DATABASE_URL =", process.env.DATABASE_URL);
-
-  const allProductColumns = await db.execute(sql`
-    select
-      table_schema,
-      table_name,
-      column_name,
-      data_type
-    from information_schema.columns
-    where table_schema = 'public'
-      and table_name = 'products'
-    order by ordinal_position
-  `);
-  console.log(
-    "APP PRODUCTS COLUMNS:",
-    allProductColumns.rows || allProductColumns,
-  );
-
-  const singleColumnCheck = await db.execute(sql`
-    select
-      column_name,
-      data_type
-    from information_schema.columns
-    where table_schema = 'public'
-      and table_name = 'products'
-      and column_name = 'max_discount_amount'
-  `);
-  console.log(
-    "APP MAX DISCOUNT COLUMN CHECK:",
-    singleColumnCheck.rows || singleColumnCheck,
-  );
 
   const [product] = await db
     .update(products)

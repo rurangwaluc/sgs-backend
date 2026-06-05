@@ -123,7 +123,10 @@ async function createSale(request, reply) {
       });
     }
 
-    if (e.code === "PRICE_ADJUSTMENT_REASON_REQUIRED") {
+    if (
+      e.code === "PRICE_ADJUSTMENT_REASON_REQUIRED" ||
+      e.code === "MISSING_PRICE_ADJUSTMENT_REASON"
+    ) {
       return reply.status(400).send({
         error:
           "Price adjustment reason is required when seller adds extra charge",
@@ -211,9 +214,10 @@ async function updateSale(request, reply) {
     }
 
     if (e.code === "CUSTOMER_NOT_FOUND") {
-      return reply
-        .status(404)
-        .send({ error: "Customer not found", debug: e.debug });
+      return reply.status(404).send({
+        error: "Customer not found",
+        debug: e.debug,
+      });
     }
 
     if (e.code === "MISSING_CUSTOMER" || e.code === "MISSING_CUSTOMER_FIELDS") {
@@ -223,35 +227,88 @@ async function updateSale(request, reply) {
       });
     }
 
-    if (e.code === "NO_ITEMS")
+    if (e.code === "NO_ITEMS") {
       return reply.status(400).send({ error: "No items" });
+    }
 
     if (e.code === "PRODUCT_NOT_FOUND") {
-      return reply
-        .status(404)
-        .send({ error: "Product not found", debug: e.debug });
+      return reply.status(404).send({
+        error: "Product not found",
+        debug: e.debug,
+      });
     }
 
     if (e.code === "PRODUCT_INACTIVE") {
-      return reply
-        .status(409)
-        .send({ error: "Product is inactive", debug: e.debug });
+      return reply.status(409).send({
+        error: "Product is inactive",
+        debug: e.debug,
+      });
     }
 
     if (e.code === "BAD_QTY") {
-      return reply.status(400).send({ error: "Invalid qty", debug: e.debug });
+      return reply.status(400).send({
+        error: "Invalid qty",
+        debug: e.debug,
+      });
     }
 
-    if (e.code === "DISCOUNT_TOO_HIGH" || e.code === "SALE_DISCOUNT_TOO_HIGH") {
-      return reply
-        .status(409)
-        .send({ error: "Discount exceeds allowed maximum", debug: e.debug });
+    if (e.code === "BAD_UNIT_PRICE") {
+      return reply.status(400).send({
+        error: "Invalid unit price",
+        debug: e.debug,
+      });
     }
 
-    if (e.code === "MISSING_PRICE_ADJUSTMENT_REASON") {
+    if (e.code === "PRICE_BELOW_SELLING_NOT_ALLOWED") {
+      return reply.status(409).send({
+        error: "Use discount instead of lowering the product price",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "PRICE_UPLIFT_NOT_ALLOWED") {
+      return reply.status(403).send({
+        error:
+          "You are not allowed to increase sale price above the official product price",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "PRICE_UPLIFT_LIMIT_EXCEEDED") {
+      return reply.status(409).send({
+        error: "Extra charge exceeds the allowed uplift limit",
+        debug: e.debug,
+      });
+    }
+
+    if (
+      e.code === "PRICE_ADJUSTMENT_REASON_REQUIRED" ||
+      e.code === "MISSING_PRICE_ADJUSTMENT_REASON"
+    ) {
       return reply.status(400).send({
         error:
           "Price adjustment reason is required when seller adds extra charge",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "BAD_DISCOUNT" || e.code === "BAD_DISCOUNT_PERCENT") {
+      return reply.status(409).send({
+        error: "Invalid discount",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "DISCOUNT_TOO_HIGH") {
+      return reply.status(409).send({
+        error: "Discount percent exceeds allowed maximum",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "SALE_DISCOUNT_TOO_HIGH") {
+      return reply.status(409).send({
+        error: "Sale discount percent exceeds allowed maximum",
         debug: e.debug,
       });
     }
@@ -339,7 +396,9 @@ async function markSale(request, reply) {
     request.log.error({ err: e }, "markSale failed");
 
     if (e.code === "FORBIDDEN") {
-      return reply.status(403).send({ error: "Forbidden" });
+      return reply.status(403).send({
+        error: "You can only mark your own sale",
+      });
     }
 
     if (e.code === "NOT_FOUND") {
@@ -348,7 +407,7 @@ async function markSale(request, reply) {
 
     if (e.code === "BAD_STATUS") {
       return reply.status(409).send({
-        error: "Invalid sale status",
+        error: "This sale is not ready for payment marking",
         debug: e.debug,
       });
     }
@@ -370,7 +429,7 @@ async function markSale(request, reply) {
 
     if (e.code === "USE_CREDIT_ENDPOINT") {
       return reply.status(409).send({
-        error: "Use POST /credits to create a credit request",
+        error: "Use the credit workflow to create a credit sale",
       });
     }
 
@@ -392,7 +451,7 @@ async function cancelSale(request, reply) {
   const saleId = toSaleId(request.params);
   if (!saleId) return reply.status(400).send({ error: "Invalid sale id" });
 
-  const parsed = cancelSaleSchema.safeParse(request.body);
+  const parsed = cancelSaleSchema.safeParse(request.body || {});
   if (!parsed.success) {
     return reply.status(400).send({
       error: "Invalid payload",
@@ -415,7 +474,10 @@ async function cancelSale(request, reply) {
     }
 
     if (e.code === "BAD_STATUS") {
-      return reply.status(409).send({ error: "Invalid sale status" });
+      return reply.status(409).send({
+        error: e.message || "Sale cannot be cancelled in its current status",
+        debug: e.debug,
+      });
     }
 
     request.log.error({ err: e }, "cancelSale failed");
@@ -423,4 +485,10 @@ async function cancelSale(request, reply) {
   }
 }
 
-module.exports = { createSale, updateSale, fulfillSale, markSale, cancelSale };
+module.exports = {
+  createSale,
+  updateSale,
+  fulfillSale,
+  markSale,
+  cancelSale,
+};

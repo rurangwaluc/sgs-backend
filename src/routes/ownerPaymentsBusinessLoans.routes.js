@@ -6,6 +6,7 @@ const {
   getOwnerPaymentBusinessLoanDetail,
   createOwnerPaymentBusinessLoan,
   createOwnerPaymentBusinessLoanRepayment,
+  voidOwnerPaymentBusinessLoan,
 } = require("../controllers/ownerPaymentsBusinessLoans.controller");
 
 function getSessionUser(request) {
@@ -73,6 +74,14 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
       preHandler: ownerOnly,
     },
     createOwnerPaymentBusinessLoanRepayment,
+  );
+
+  app.post(
+    "/owner/payments/business-loans/:id/void",
+    {
+      preHandler: ownerOnly,
+    },
+    voidOwnerPaymentBusinessLoan,
   );
 }
 

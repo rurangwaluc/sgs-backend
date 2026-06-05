@@ -38,7 +38,7 @@ const { ownerLoansRoutes } = require("./routes/ownerLoans.routes");
 const businessLoansReceivedRoutes = require("./routes/businessLoansReceived.routes");
 
 const { goodsReceiptsRoutes } = require("./routes/goodsReceipts.routes");
-const { purchaseOrdersRoutes } = require("./routes/purchaseorders.routes");
+const { purchaseOrdersRoutes } = require("./routes/purchaseOrders.routes");
 
 const { proformasRoutes } = require("./routes/proformas.routes");
 const { deliveryNotesRoutes } = require("./routes/deliveryNotes.routes");
@@ -116,16 +116,6 @@ function buildApp() {
     logger: true,
     trustProxy: true,
   });
-
-  const { db } = require("./config/db");
-  const { sql } = require("drizzle-orm");
-
-  db.execute(sql`select current_database() as db, current_schema() as schema`)
-    .then((r) => {
-      const rows = r.rows || r;
-      console.log("[DB CHECK]", rows?.[0]);
-    })
-    .catch((e) => console.error("[DB CHECK FAILED]", e));
 
   const allowList = new Set(
     (Array.isArray(env.CORS_ORIGINS) ? env.CORS_ORIGINS : [])

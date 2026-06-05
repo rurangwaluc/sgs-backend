@@ -7,10 +7,6 @@ function toInt(value, fallback = null) {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
-function cleanStr(value) {
-  return String(value ?? "").trim();
-}
-
 function parseFilters(input = {}) {
   return {
     locationId: input.locationId || null,
@@ -78,10 +74,30 @@ async function repayBusinessLoanFromOwnerPayments(
   );
 }
 
+async function voidBusinessLoanFromOwnerPayments(
+  businessLoanId,
+  input = {},
+  actor = {},
+) {
+  const loanId = toInt(businessLoanId, null);
+  if (!loanId || loanId <= 0) {
+    throw new Error("Valid business loan id is required");
+  }
+
+  return businessLoansReceivedService.voidBusinessLoan(
+    {
+      ...input,
+      businessLoanId: loanId,
+    },
+    actor,
+  );
+}
+
 module.exports = {
   getBusinessLoansListForOwnerPayments,
   getBusinessLoansSummaryForOwnerPayments,
   getBusinessLoanDetailForOwnerPayments,
   receiveBusinessLoanFromOwnerPayments,
   repayBusinessLoanFromOwnerPayments,
+  voidBusinessLoanFromOwnerPayments,
 };

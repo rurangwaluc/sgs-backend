@@ -53,6 +53,12 @@ function parseRepaymentBody(body = {}) {
   };
 }
 
+function parseVoidBody(body = {}) {
+  return {
+    reason: body.reason || body.voidReason || body.note,
+  };
+}
+
 function mapServiceErrorToStatus(message = "") {
   const text = String(message || "").toLowerCase();
 
@@ -62,7 +68,9 @@ function mapServiceErrorToStatus(message = "") {
     text.includes("must be") ||
     text.includes("exceeds remaining balance") ||
     text.includes("already fully repaid") ||
-    text.includes("cannot be repaid")
+    text.includes("cannot be repaid") ||
+    text.includes("already voided") ||
+    text.includes("void is blocked")
   ) {
     return 400;
   }
@@ -229,10 +237,48 @@ async function createOwnerPaymentBusinessLoanRepayment(request, reply) {
   }
 }
 
+async function voidOwnerPaymentBusinessLoan(request, reply) {
+  try {
+    const actor = buildActor(request);
+    const businessLoanId = request.params?.id;
+    const payload = parseVoidBody(request.body || {});
+
+    const loan =
+      await ownerPaymentsBusinessLoansService.voidBusinessLoanFromOwnerPayments(
+        businessLoanId,
+        payload,
+        actor,
+      );
+
+    const summary =
+      await ownerPaymentsBusinessLoansService.getBusinessLoansSummaryForOwnerPayments(
+        { locationId: loan?.locationId || null },
+      );
+
+    return reply.send({
+      ok: true,
+      message: "Business loan voided successfully",
+      loan,
+      summary,
+    });
+  } catch (error) {
+    request.log.error({ err: error }, "voidOwnerPaymentBusinessLoan failed");
+
+    const message = error?.message || "Failed to void business loan";
+    const status = mapServiceErrorToStatus(message);
+
+    return reply.status(status).send({
+      ok: false,
+      error: message,
+    });
+  }
+}
+
 module.exports = {
   listOwnerPaymentBusinessLoans,
   getOwnerPaymentBusinessLoansSummary,
   getOwnerPaymentBusinessLoanDetail,
   createOwnerPaymentBusinessLoan,
   createOwnerPaymentBusinessLoanRepayment,
+  voidOwnerPaymentBusinessLoan,
 };

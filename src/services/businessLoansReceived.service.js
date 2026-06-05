@@ -22,8 +22,7 @@ function rowsOf(result) {
 }
 
 function firstRow(result, fallback = null) {
-  const rows = rowsOf(result);
-  return rows[0] || fallback;
+  return rowsOf(result)[0] || fallback;
 }
 
 function toInt(value, fallback = null) {
@@ -85,7 +84,6 @@ function mapLoanRow(row) {
 
   const principalAmount = toInt(row.principalAmount ?? row.principal_amount, 0);
   const repaidAmount = toInt(row.repaidAmount ?? row.repaid_amount, 0);
-  const remainingAmount = Math.max(0, principalAmount - repaidAmount);
 
   return {
     id: toInt(row.id, null),
@@ -99,7 +97,7 @@ function mapLoanRow(row) {
     lenderEmail: cleanStr(row.lenderEmail ?? row.lender_email),
     principalAmount,
     repaidAmount,
-    remainingAmount,
+    remainingAmount: Math.max(0, principalAmount - repaidAmount),
     currency: cleanStr(row.currency) || "RWF",
     receiptMethod: cleanStr(row.receiptMethod ?? row.receipt_method),
     receivedAt: row.receivedAt ?? row.received_at ?? null,
@@ -107,6 +105,7 @@ function mapLoanRow(row) {
     reference: cleanStr(row.reference),
     note: cleanStr(row.note),
     status: cleanStr(row.status),
+    repaymentsCount: toInt(row.repaymentsCount ?? row.repayments_count, 0),
     createdByUserId: toInt(row.createdByUserId ?? row.created_by_user_id, null),
     voidedByUserId: toInt(row.voidedByUserId ?? row.voided_by_user_id, null),
     voidReason: cleanStr(row.voidReason ?? row.void_reason),
@@ -139,9 +138,9 @@ function pad3(n) {
 
 function normalizeBranchCode(code, locationId) {
   const raw = cleanStr(code).toUpperCase();
-  if (!raw) return "BRANCH";
+  if (!raw) return `BRANCH${locationId || ""}`;
   const normalized = raw.replace(/[^A-Z0-9]+/g, "");
-  return normalized || `BRANCH${locationId}`;
+  return normalized || `BRANCH${locationId || ""}`;
 }
 
 function buildAutoReference({ locationCode, locationId, loanId }) {
@@ -309,10 +308,8 @@ async function receiveBusinessLoan(input = {}, actor = {}) {
       RETURNING *
     `);
 
-    const finalLoanRow = firstRow(updatedLoanRes) || insertedLoanRaw;
-
     const insertedLoan = mapLoanRow({
-      ...finalLoanRow,
+      ...(firstRow(updatedLoanRes) || insertedLoanRaw),
       location_name: locationRow.name,
       location_code: locationRow.code,
     });
@@ -369,18 +366,32 @@ async function repayBusinessLoan(input = {}, actor = {}) {
   }
 
   return db.transaction(async (tx) => {
-    const loanRes = await tx.execute(sql`
-      SELECT blr.*, l.name as location_name, l.code as location_code
-      FROM business_loans_received blr
-      LEFT JOIN locations l ON l.id = blr.location_id
-      WHERE blr.id = ${businessLoanId}
+    const lockedLoanRes = await tx.execute(sql`
+      SELECT *
+      FROM business_loans_received
+      WHERE id = ${businessLoanId}
       FOR UPDATE
     `);
 
-    const currentLoan = mapLoanRow(firstRow(loanRes));
-    if (!currentLoan?.id) {
+    const lockedLoanRow = firstRow(lockedLoanRes);
+
+    if (!lockedLoanRow?.id) {
       throw new Error("Business loan not found");
     }
+
+    const locationRes = await tx.execute(sql`
+      SELECT id, name, code
+      FROM locations
+      WHERE id = ${lockedLoanRow.location_id}
+      LIMIT 1
+    `);
+
+    const locationRow = firstRow(locationRes) || {};
+    const currentLoan = mapLoanRow({
+      ...lockedLoanRow,
+      location_name: locationRow.name,
+      location_code: locationRow.code,
+    });
 
     if (currentLoan.status === LOAN_STATUSES.VOID) {
       throw new Error("Void business loan cannot be repaid");
@@ -498,6 +509,123 @@ async function repayBusinessLoan(input = {}, actor = {}) {
   });
 }
 
+async function voidBusinessLoan(input = {}, actor = {}) {
+  const businessLoanId = requirePositiveInt(
+    input.businessLoanId || input.loanId || input.id,
+    "businessLoanId",
+  );
+  const reason = cleanStr(input.reason || input.voidReason, 500);
+  const voidedByUserId = toInt(actor.userId ?? input.voidedByUserId, null);
+
+  if (!voidedByUserId || voidedByUserId <= 0) {
+    throw new Error("Authenticated owner user is required");
+  }
+
+  if (!reason) {
+    throw new Error("Void reason is required");
+  }
+
+  return db.transaction(async (tx) => {
+    const lockedLoanRes = await tx.execute(sql`
+      SELECT *
+      FROM business_loans_received
+      WHERE id = ${businessLoanId}
+      FOR UPDATE
+    `);
+
+    const lockedLoanRow = firstRow(lockedLoanRes);
+
+    if (!lockedLoanRow?.id) {
+      throw new Error("Business loan not found");
+    }
+
+    const locationRes = await tx.execute(sql`
+      SELECT id, name, code
+      FROM locations
+      WHERE id = ${lockedLoanRow.location_id}
+      LIMIT 1
+    `);
+
+    const locationRow = firstRow(locationRes) || {};
+    const currentLoan = mapLoanRow({
+      ...lockedLoanRow,
+      location_name: locationRow.name,
+      location_code: locationRow.code,
+    });
+
+    if (currentLoan.status === LOAN_STATUSES.VOID) {
+      throw new Error("Business loan is already voided");
+    }
+
+    const repaymentsCountRes = await tx.execute(sql`
+      SELECT COUNT(*)::int AS count
+      FROM business_loan_repayments
+      WHERE business_loan_id = ${businessLoanId}
+    `);
+
+    const repaymentsCount = toInt(firstRow(repaymentsCountRes)?.count, 0);
+
+    if (repaymentsCount > 0 || currentLoan.repaidAmount > 0) {
+      throw new Error(
+        "Business loan already has repayment history. Void is blocked.",
+      );
+    }
+
+    const updatedLoanRes = await tx.execute(sql`
+      UPDATE business_loans_received
+      SET
+        status = ${LOAN_STATUSES.VOID},
+        voided_by_user_id = ${voidedByUserId},
+        void_reason = ${reason},
+        voided_at = now(),
+        updated_at = now()
+      WHERE id = ${businessLoanId}
+      RETURNING *
+    `);
+
+    const voidedLoan = mapLoanRow({
+      ...(firstRow(updatedLoanRes) || {}),
+      location_name: currentLoan.locationName,
+      location_code: currentLoan.locationCode,
+    });
+
+    if (!voidedLoan?.id) {
+      throw new Error("Failed to void business loan");
+    }
+
+    await createCashLedgerEntry(tx, {
+      locationId: currentLoan.locationId,
+      cashierId: voidedByUserId,
+      direction: "OUT",
+      type: "BUSINESS_LOAN_VOID",
+      method: currentLoan.receiptMethod || "CASH",
+      amount: currentLoan.principalAmount,
+      note:
+        cleanNullableStr(
+          `Voided business loan from ${currentLoan.lenderName} • Ref ${currentLoan.reference || currentLoan.id} • Reason: ${reason}`,
+          500,
+        ) || null,
+      businessLoanReceivedId: currentLoan.id,
+      businessLoanRepaymentId: null,
+    });
+
+    await writeBusinessLoanAudit(tx, {
+      action: "BUSINESS_LOAN_RECEIVED_VOIDED",
+      actorUserId: voidedByUserId,
+      locationId: currentLoan.locationId,
+      entity: "business_loan_received",
+      entityId: currentLoan.id,
+      detail: {
+        reason,
+        reference: currentLoan.reference,
+        principalAmount: currentLoan.principalAmount,
+      },
+    });
+
+    return voidedLoan;
+  });
+}
+
 async function listBusinessLoansReceived(filters = {}) {
   const locationId = toInt(filters.locationId, null);
   const status = cleanStr(filters.status).toUpperCase();
@@ -608,6 +736,7 @@ async function getBusinessLoansReceivedSummary(filters = {}) {
 module.exports = {
   receiveBusinessLoan,
   repayBusinessLoan,
+  voidBusinessLoan,
   listBusinessLoansReceived,
   getBusinessLoanReceivedById,
   getBusinessLoansReceivedSummary,

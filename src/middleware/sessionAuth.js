@@ -1,11 +1,10 @@
 const crypto = require("crypto");
 
 const { db } = require("../config/db");
-const { sessions } = require("../db/schema/sessions.schema");
-const { users } = require("../db/schema/users.schema");
-const { locations } = require("../db/schema/locations.schema");
+const { sql } = require("drizzle-orm");
 
-const { eq } = require("drizzle-orm");
+const LAST_SEEN_WRITE_INTERVAL_MS = 60 * 1000;
+const lastSeenWriteCache = new Map();
 
 function sha256Hex(input) {
   return crypto.createHash("sha256").update(String(input)).digest("hex");
@@ -24,6 +23,123 @@ function readSignedSid(request) {
   return raw;
 }
 
+function rowsOf(result) {
+  return result?.rows || result || [];
+}
+
+function firstRow(result) {
+  return rowsOf(result)[0] || null;
+}
+
+function shouldTouchLastSeen(userId, nowMs) {
+  if (!userId) return false;
+
+  const key = String(userId);
+  const previous = lastSeenWriteCache.get(key) || 0;
+
+  if (nowMs - previous < LAST_SEEN_WRITE_INTERVAL_MS) {
+    return false;
+  }
+
+  lastSeenWriteCache.set(key, nowMs);
+  return true;
+}
+
+function mapLocation(row) {
+  if (!row || row.locationId == null) return null;
+
+  return {
+    id: row.locationId,
+    name: row.locationName,
+    code: row.locationCode,
+    email: row.locationEmail ?? null,
+    phone: row.locationPhone ?? null,
+    website: row.locationWebsite ?? null,
+    logoUrl: row.locationLogoUrl ?? null,
+    address: row.locationAddress ?? null,
+    tin: row.locationTin ?? null,
+    momoCode: row.locationMomoCode ?? null,
+    bankAccounts: Array.isArray(row.locationBankAccounts)
+      ? row.locationBankAccounts
+      : [],
+    status: row.locationStatus ?? null,
+    openedAt: row.locationOpenedAt ?? null,
+    closedAt: row.locationClosedAt ?? null,
+    archivedAt: row.locationArchivedAt ?? null,
+    closeReason: row.locationCloseReason ?? null,
+    updatedAt: row.locationUpdatedAt ?? null,
+  };
+}
+
+async function loadSessionContext(tokenHash) {
+  const result = await db.execute(sql`
+    SELECT
+      s.id AS "sessionId",
+      s.user_id AS "sessionUserId",
+      s.session_token AS "sessionToken",
+      s.expires_at AS "sessionExpiresAt",
+      s.acting_as_role AS "actingAsRole",
+      s.coverage_reason AS "coverageReason",
+      s.coverage_note AS "coverageNote",
+      s.coverage_started_at AS "coverageStartedAt",
+      s.created_at AS "sessionCreatedAt",
+
+      u.id AS "userId",
+      u.location_id AS "userLocationId",
+      u.name AS "userName",
+      u.email AS "userEmail",
+      u.role AS "userRole",
+      u.is_active AS "userIsActive",
+      u.last_seen_at AS "userLastSeenAt",
+
+      l.id AS "locationId",
+      l.name AS "locationName",
+      l.code AS "locationCode",
+      l.email AS "locationEmail",
+      l.phone AS "locationPhone",
+      l.website AS "locationWebsite",
+      l.logo_url AS "locationLogoUrl",
+      l.address AS "locationAddress",
+      l.tin AS "locationTin",
+      l.momo_code AS "locationMomoCode",
+      l.bank_accounts AS "locationBankAccounts",
+      l.status AS "locationStatus",
+      l.opened_at AS "locationOpenedAt",
+      l.closed_at AS "locationClosedAt",
+      l.archived_at AS "locationArchivedAt",
+      l.close_reason AS "locationCloseReason",
+      l.updated_at AS "locationUpdatedAt"
+    FROM sessions s
+    JOIN users u
+      ON u.id = s.user_id
+    LEFT JOIN locations l
+      ON l.id = u.location_id
+    WHERE s.session_token = ${tokenHash}
+    LIMIT 1
+  `);
+
+  return firstRow(result);
+}
+
+async function touchLastSeen(request, userId, now) {
+  const nowMs = now.getTime();
+
+  if (!shouldTouchLastSeen(userId, nowMs)) {
+    return;
+  }
+
+  try {
+    await db.execute(sql`
+      UPDATE users
+      SET last_seen_at = ${now}
+      WHERE id = ${userId}
+    `);
+  } catch (e) {
+    lastSeenWriteCache.delete(String(userId));
+    request.log?.warn?.({ err: e }, "lastSeenAt update failed");
+  }
+}
+
 async function sessionAuth(request) {
   const tokenRaw = readSignedSid(request);
 
@@ -36,125 +152,43 @@ async function sessionAuth(request) {
   const tokenHash = sha256Hex(tokenRaw);
   const now = new Date();
 
-  const sessionRows = await db
-    .select({
-      id: sessions.id,
-      userId: sessions.userId,
-      sessionToken: sessions.sessionToken,
-      expiresAt: sessions.expiresAt,
-      actingAsRole: sessions.actingAsRole,
-      coverageReason: sessions.coverageReason,
-      coverageNote: sessions.coverageNote,
-      coverageStartedAt: sessions.coverageStartedAt,
-      createdAt: sessions.createdAt,
-    })
-    .from(sessions)
-    .where(eq(sessions.sessionToken, tokenHash));
+  const row = await loadSessionContext(tokenHash);
 
-  const session = sessionRows[0];
-
-  if (!session || session.expiresAt <= now) {
+  if (!row || row.sessionExpiresAt <= now) {
     request.session = null;
     request.user = null;
     return;
   }
 
-  const userRows = await db
-    .select({
-      id: users.id,
-      locationId: users.locationId,
-      name: users.name,
-      email: users.email,
-      role: users.role,
-      isActive: users.isActive,
-      lastSeenAt: users.lastSeenAt,
-    })
-    .from(users)
-    .where(eq(users.id, session.userId));
-
-  const user = userRows[0];
-
-  if (!user || user.isActive === false) {
+  if (row.userIsActive === false) {
     request.session = null;
     request.user = null;
     return;
   }
 
-  try {
-    await db
-      .update(users)
-      .set({ lastSeenAt: now })
-      .where(eq(users.id, user.id));
-  } catch (e) {
-    request.log?.error?.(e);
-  }
-
-  const locRows = await db
-    .select({
-      id: locations.id,
-      name: locations.name,
-      code: locations.code,
-      email: locations.email,
-      phone: locations.phone,
-      website: locations.website,
-      logoUrl: locations.logoUrl,
-      address: locations.address,
-      tin: locations.tin,
-      momoCode: locations.momoCode,
-      bankAccounts: locations.bankAccounts,
-      status: locations.status,
-      openedAt: locations.openedAt,
-      closedAt: locations.closedAt,
-      archivedAt: locations.archivedAt,
-      closeReason: locations.closeReason,
-      updatedAt: locations.updatedAt,
-    })
-    .from(locations)
-    .where(eq(locations.id, user.locationId));
-
-  const loc = locRows[0] || null;
+  const loc = mapLocation(row);
 
   request.session = {
-    id: session.id,
-    userId: session.userId,
-    expiresAt: session.expiresAt,
-    actingAsRole: session.actingAsRole ?? null,
-    coverageReason: session.coverageReason ?? null,
-    coverageNote: session.coverageNote ?? null,
-    coverageStartedAt: session.coverageStartedAt ?? null,
-    createdAt: session.createdAt ?? null,
+    id: row.sessionId,
+    userId: row.sessionUserId,
+    expiresAt: row.sessionExpiresAt,
+    actingAsRole: row.actingAsRole ?? null,
+    coverageReason: row.coverageReason ?? null,
+    coverageNote: row.coverageNote ?? null,
+    coverageStartedAt: row.coverageStartedAt ?? null,
+    createdAt: row.sessionCreatedAt ?? null,
   };
 
   request.user = {
-    id: user.id,
-    locationId: user.locationId,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    isActive: user.isActive,
+    id: row.userId,
+    locationId: row.userLocationId,
+    name: row.userName,
+    email: row.userEmail,
+    role: row.userRole,
+    isActive: row.userIsActive,
     lastSeenAt: now.toISOString(),
 
-    location: loc
-      ? {
-          id: loc.id,
-          name: loc.name,
-          code: loc.code,
-          email: loc.email ?? null,
-          phone: loc.phone ?? null,
-          website: loc.website ?? null,
-          logoUrl: loc.logoUrl ?? null,
-          address: loc.address ?? null,
-          tin: loc.tin ?? null,
-          momoCode: loc.momoCode ?? null,
-          bankAccounts: Array.isArray(loc.bankAccounts) ? loc.bankAccounts : [],
-          status: loc.status ?? null,
-          openedAt: loc.openedAt ?? null,
-          closedAt: loc.closedAt ?? null,
-          archivedAt: loc.archivedAt ?? null,
-          closeReason: loc.closeReason ?? null,
-          updatedAt: loc.updatedAt ?? null,
-        }
-      : null,
+    location: loc,
 
     business: loc
       ? {
@@ -171,11 +205,13 @@ async function sessionAuth(request) {
         }
       : null,
 
-    actingAsRole: session.actingAsRole ?? null,
-    coverageReason: session.coverageReason ?? null,
-    coverageNote: session.coverageNote ?? null,
-    coverageStartedAt: session.coverageStartedAt ?? null,
+    actingAsRole: row.actingAsRole ?? null,
+    coverageReason: row.coverageReason ?? null,
+    coverageNote: row.coverageNote ?? null,
+    coverageStartedAt: row.coverageStartedAt ?? null,
   };
+
+  await touchLastSeen(request, row.userId, now);
 }
 
 module.exports = { sessionAuth };

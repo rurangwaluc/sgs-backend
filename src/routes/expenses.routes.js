@@ -8,6 +8,26 @@ const {
   listExpenses,
 } = require("../controllers/expensesController");
 
+function normalizeRole(role) {
+  return String(role || "")
+    .trim()
+    .toLowerCase();
+}
+
+async function requireOwnerForExpenseCreation(request, reply) {
+  if (!request.user) {
+    return reply.status(401).send({ error: "Unauthorized" });
+  }
+
+  const role = normalizeRole(request.user.role);
+
+  if (role !== "owner") {
+    return reply.status(403).send({
+      error: "Owner approval is required before this expense can be recorded.",
+    });
+  }
+}
+
 async function expensesRoutes(app) {
   app.get(
     "/cash/expenses",
@@ -17,7 +37,7 @@ async function expensesRoutes(app) {
 
   app.post(
     "/cash/expenses",
-    { preHandler: [requirePermission(ACTIONS.EXPENSE_CREATE)] },
+    { preHandler: [requireOwnerForExpenseCreation] },
     createExpense,
   );
 
