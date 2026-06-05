@@ -7,6 +7,12 @@ const {
   voidExpense,
   listExpenses,
 } = require("../controllers/expensesController");
+const {
+  createExpenseRequest,
+  listExpenseRequests,
+  approveExpenseRequest,
+  rejectExpenseRequest,
+} = require("../controllers/expenseRequestsController");
 
 function normalizeRole(role) {
   return String(role || "")
@@ -14,7 +20,27 @@ function normalizeRole(role) {
     .toLowerCase();
 }
 
-async function requireOwnerForExpenseCreation(request, reply) {
+async function requireAuthenticated(request, reply) {
+  if (!request.user) {
+    return reply.status(401).send({ error: "Unauthorized" });
+  }
+}
+
+async function requireExpenseSubmitter(request, reply) {
+  if (!request.user) {
+    return reply.status(401).send({ error: "Unauthorized" });
+  }
+
+  const role = normalizeRole(request.user.role);
+
+  if (!["owner", "admin", "manager", "cashier"].includes(role)) {
+    return reply.status(403).send({
+      error: "You are not allowed to submit expense records.",
+    });
+  }
+}
+
+async function requireOwnerForExpenseDecision(request, reply) {
   if (!request.user) {
     return reply.status(401).send({ error: "Unauthorized" });
   }
@@ -23,7 +49,7 @@ async function requireOwnerForExpenseCreation(request, reply) {
 
   if (role !== "owner") {
     return reply.status(403).send({
-      error: "Owner approval is required before this expense can be recorded.",
+      error: "Only owner can approve or reject expense requests.",
     });
   }
 }
@@ -37,7 +63,7 @@ async function expensesRoutes(app) {
 
   app.post(
     "/cash/expenses",
-    { preHandler: [requireOwnerForExpenseCreation] },
+    { preHandler: [requireExpenseSubmitter] },
     createExpense,
   );
 
@@ -45,6 +71,30 @@ async function expensesRoutes(app) {
     "/cash/expenses/:id/void",
     { preHandler: [requirePermission(ACTIONS.EXPENSE_VOID)] },
     voidExpense,
+  );
+
+  app.get(
+    "/cash/expense-requests",
+    { preHandler: [requireAuthenticated] },
+    listExpenseRequests,
+  );
+
+  app.post(
+    "/cash/expense-requests",
+    { preHandler: [requireExpenseSubmitter] },
+    createExpenseRequest,
+  );
+
+  app.post(
+    "/cash/expense-requests/:id/approve",
+    { preHandler: [requireOwnerForExpenseDecision] },
+    approveExpenseRequest,
+  );
+
+  app.post(
+    "/cash/expense-requests/:id/reject",
+    { preHandler: [requireOwnerForExpenseDecision] },
+    rejectExpenseRequest,
   );
 }
 

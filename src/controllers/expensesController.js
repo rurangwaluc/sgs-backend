@@ -7,6 +7,7 @@ const {
   listExpensesQuerySchema,
 } = require("../validators/expenses.schema");
 const expensesService = require("../services/expensesService");
+const expenseRequestsService = require("../services/expenseRequestsService");
 
 function normalizeRole(role) {
   return String(role || "")
@@ -61,6 +62,25 @@ function resolveCreateLocationId({ role, bodyLocationId, userLocationId }) {
   return userLocationId || null;
 }
 
+function mapCreateError(e) {
+  if (e.code === "SESSION_NOT_FOUND") return 404;
+  if (e.code === "NO_OPEN_SESSION") return 409;
+  if (e.code === "OWNER_DIRECT_EXPENSE") return 400;
+
+  if (
+    e.code === "BAD_LOCATION" ||
+    e.code === "BAD_ACTOR" ||
+    e.code === "BAD_AMOUNT" ||
+    e.code === "BAD_EXPENSE_DATE" ||
+    e.code === "BAD_CATEGORY" ||
+    e.code === "RESERVED_EXPENSE_CATEGORY"
+  ) {
+    return 400;
+  }
+
+  return 500;
+}
+
 async function createExpense(request, reply) {
   const parsed = createExpenseSchema.safeParse(request.body || {});
   if (!parsed.success) {
@@ -84,6 +104,35 @@ async function createExpense(request, reply) {
   }
 
   try {
+    if (!isOwner(role)) {
+      const expenseRequest = await expenseRequestsService.createExpenseRequest(
+        {
+          locationId: effectiveLocationId,
+          cashSessionId: parsed.data.cashSessionId,
+          category: parsed.data.category,
+          amount: parsed.data.amount,
+          expenseDate: parsed.data.expenseDate,
+          method: parsed.data.method,
+          payeeName: parsed.data.payeeName,
+          reference: parsed.data.reference,
+          note: parsed.data.note,
+          attachments: parsed.data.attachments || [],
+        },
+        {
+          userId: request.user.id,
+          locationId: request.user?.locationId,
+          role,
+        },
+      );
+
+      return reply.status(202).send({
+        ok: true,
+        requiresOwnerApproval: true,
+        message: "Expense request sent for owner approval.",
+        expenseRequest,
+      });
+    }
+
     const expense = await expensesService.createExpense({
       locationId: effectiveLocationId,
       actorUserId: request.user.id,
@@ -102,30 +151,18 @@ async function createExpense(request, reply) {
 
     return reply.send({
       ok: true,
+      requiresOwnerApproval: false,
       expense,
     });
   } catch (e) {
-    if (e.code === "SESSION_NOT_FOUND") {
-      return reply.status(404).send({ error: e.message });
+    const status = mapCreateError(e);
+    if (status >= 500) {
+      request.log.error({ err: e }, "createExpense failed");
     }
 
-    if (e.code === "NO_OPEN_SESSION") {
-      return reply.status(409).send({ error: e.message });
-    }
-
-    if (
-      e.code === "BAD_LOCATION" ||
-      e.code === "BAD_ACTOR" ||
-      e.code === "BAD_AMOUNT" ||
-      e.code === "BAD_EXPENSE_DATE" ||
-      e.code === "BAD_CATEGORY" ||
-      e.code === "RESERVED_EXPENSE_CATEGORY"
-    ) {
-      return reply.status(400).send({ error: e.message });
-    }
-
-    request.log.error({ err: e }, "createExpense failed");
-    return reply.status(500).send({ error: "Internal Server Error" });
+    return reply
+      .status(status)
+      .send({ error: e.message || "Internal Server Error" });
   }
 }
 
