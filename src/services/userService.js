@@ -7,8 +7,22 @@ const ROLES = require("../permissions/roles");
 const { safeLogAudit } = require("./auditService");
 const AUDIT = require("../audit/actions");
 
+function normalizeRole(role) {
+  return String(role || "")
+    .trim()
+    .toLowerCase();
+}
+
 function isOwner(user) {
-  return String(user?.role || "").toLowerCase() === ROLES.OWNER;
+  return normalizeRole(user?.role) === ROLES.OWNER;
+}
+
+function isAdmin(user) {
+  return normalizeRole(user?.role) === ROLES.ADMIN;
+}
+
+function isOwnerOrAdmin(user) {
+  return isOwner(user) || isAdmin(user);
 }
 
 function toInt(value) {
@@ -95,7 +109,7 @@ async function getUserByIdWithLocationForActor({ actorUser, userId }) {
     .from(users)
     .leftJoin(locations, eq(locations.id, users.locationId));
 
-  const rows = isOwner(actorUser)
+  const rows = isOwnerOrAdmin(actorUser)
     ? await query.where(eq(users.id, id)).limit(1)
     : await query
         .where(
@@ -123,7 +137,7 @@ async function getRawUserForActor({ actorUser, userId }) {
     })
     .from(users);
 
-  const rows = isOwner(actorUser)
+  const rows = isOwnerOrAdmin(actorUser)
     ? await query.where(eq(users.id, id)).limit(1)
     : await query
         .where(
@@ -145,10 +159,10 @@ async function locationHasOwner(locationId) {
 }
 
 function resolveCreateLocationId({ actorUser, data }) {
-  if (isOwner(actorUser)) {
+  if (isOwnerOrAdmin(actorUser)) {
     const targetLocationId = toInt(data.locationId);
     if (!targetLocationId) {
-      const err = new Error("Owner must choose a location");
+      const err = new Error("Choose a branch");
       err.code = "LOCATION_REQUIRED";
       throw err;
     }
@@ -163,8 +177,8 @@ function resolveUpdateLocationId({ actorUser, data, targetUser }) {
     return targetUser.locationId;
   }
 
-  if (!isOwner(actorUser)) {
-    const err = new Error("Only owner can move users across locations");
+  if (!isOwnerOrAdmin(actorUser)) {
+    const err = new Error("Only owner or admin can move users across branches");
     err.code = "LOCATION_CHANGE_FORBIDDEN";
     throw err;
   }
@@ -187,6 +201,7 @@ async function ensureEmailAvailableInLocation(
   const normalizedEmail = String(email || "")
     .trim()
     .toLowerCase();
+
   if (!normalizedEmail) {
     const err = new Error("Email is required");
     err.code = "INVALID_EMAIL";
@@ -220,11 +235,13 @@ async function createUser({ adminUser, data }) {
 
   if (data.role === ROLES.OWNER) {
     const hasOwner = await locationHasOwner(targetLocationId);
+
     if (hasOwner && !isOwner(adminUser)) {
       const err = new Error("Only owner can create owner users");
       err.code = "OWNER_ONLY";
       throw err;
     }
+
     if (!isOwner(adminUser)) {
       const err = new Error("Only owner can create owner users");
       err.code = "OWNER_ONLY";
@@ -273,7 +290,7 @@ async function listUsers({ adminUser }) {
     .from(users)
     .leftJoin(locations, eq(locations.id, users.locationId));
 
-  const rows = isOwner(adminUser)
+  const rows = isOwnerOrAdmin(adminUser)
     ? await query.orderBy(desc(users.createdAt), desc(users.id))
     : await query
         .where(eq(users.locationId, adminUser.locationId))
@@ -325,6 +342,7 @@ async function updateUser({ adminUser, targetUserId, data }) {
   const nextEmail = String(before.email || "")
     .trim()
     .toLowerCase();
+
   await ensureEmailAvailableInLocation(nextEmail, nextLocationId, before.id);
 
   const updates = {};
