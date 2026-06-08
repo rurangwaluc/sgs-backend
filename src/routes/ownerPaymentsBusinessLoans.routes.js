@@ -13,7 +13,13 @@ function getSessionUser(request) {
   return request.user || request.authUser || request.me || null;
 }
 
-async function ownerOnly(request, reply) {
+function normalizeRole(role) {
+  return String(role || "")
+    .trim()
+    .toLowerCase();
+}
+
+async function ownerOrAdminOnly(request, reply) {
   const user = getSessionUser(request);
 
   if (!user) {
@@ -23,14 +29,12 @@ async function ownerOnly(request, reply) {
     });
   }
 
-  const role = String(user.role || "")
-    .trim()
-    .toLowerCase();
+  const role = normalizeRole(user.role);
 
-  if (role !== "owner") {
+  if (!["owner", "admin"].includes(role)) {
     return reply.status(403).send({
       ok: false,
-      error: "Owner access required",
+      error: "Owner or admin access required",
     });
   }
 }
@@ -39,7 +43,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.get(
     "/owner/payments/business-loans",
     {
-      preHandler: ownerOnly,
+      preHandler: ownerOrAdminOnly,
     },
     listOwnerPaymentBusinessLoans,
   );
@@ -47,7 +51,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.get(
     "/owner/payments/business-loans/summary",
     {
-      preHandler: ownerOnly,
+      preHandler: ownerOrAdminOnly,
     },
     getOwnerPaymentBusinessLoansSummary,
   );
@@ -55,7 +59,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.get(
     "/owner/payments/business-loans/:id",
     {
-      preHandler: ownerOnly,
+      preHandler: ownerOrAdminOnly,
     },
     getOwnerPaymentBusinessLoanDetail,
   );
@@ -63,7 +67,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.post(
     "/owner/payments/business-loans",
     {
-      preHandler: ownerOnly,
+      preHandler: ownerOrAdminOnly,
     },
     createOwnerPaymentBusinessLoan,
   );
@@ -71,7 +75,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.post(
     "/owner/payments/business-loans/:id/repayments",
     {
-      preHandler: ownerOnly,
+      preHandler: ownerOrAdminOnly,
     },
     createOwnerPaymentBusinessLoanRepayment,
   );
@@ -79,7 +83,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.post(
     "/owner/payments/business-loans/:id/void",
     {
-      preHandler: ownerOnly,
+      preHandler: ownerOrAdminOnly,
     },
     voidOwnerPaymentBusinessLoan,
   );

@@ -55,7 +55,7 @@ function parseIsoDateEndExclusive(value) {
 }
 
 function resolveCreateLocationId({ role, bodyLocationId, userLocationId }) {
-  if (isOwner(role)) {
+  if (isAdminLike(role)) {
     return bodyLocationId || userLocationId || null;
   }
 
@@ -104,7 +104,7 @@ async function createExpense(request, reply) {
   }
 
   try {
-    if (!isOwner(role)) {
+    if (!isAdminLike(role)) {
       const expenseRequest = await expenseRequestsService.createExpenseRequest(
         {
           locationId: effectiveLocationId,
@@ -146,7 +146,7 @@ async function createExpense(request, reply) {
       reference: parsed.data.reference,
       note: parsed.data.note,
       attachments: parsed.data.attachments || [],
-      allowMissingCashSession: isAdminLike(role),
+      allowMissingCashSession: true,
     });
 
     return reply.send({
