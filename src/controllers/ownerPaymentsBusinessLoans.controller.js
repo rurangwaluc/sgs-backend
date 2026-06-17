@@ -59,23 +59,27 @@ function parseVoidBody(body = {}) {
   };
 }
 
-function mapServiceErrorToStatus(message = "") {
-  const text = String(message || "").toLowerCase();
+function mapServiceErrorToStatus(error) {
+  const code = error?.code;
+  const message = String(error?.message || "").toLowerCase();
+
+  if (code === "INSUFFICIENT_FUNDS") return 409;
 
   if (
-    text.includes("required") ||
-    text.includes("invalid") ||
-    text.includes("must be") ||
-    text.includes("exceeds remaining balance") ||
-    text.includes("already fully repaid") ||
-    text.includes("cannot be repaid") ||
-    text.includes("already voided") ||
-    text.includes("void is blocked")
+    message.includes("required") ||
+    message.includes("invalid") ||
+    message.includes("must be") ||
+    message.includes("cannot be in the future") ||
+    message.includes("exceeds remaining balance") ||
+    message.includes("already fully repaid") ||
+    message.includes("cannot be repaid") ||
+    message.includes("already voided") ||
+    message.includes("void is blocked")
   ) {
     return 400;
   }
 
-  if (text.includes("not found")) {
+  if (message.includes("not found")) {
     return 404;
   }
 
@@ -151,7 +155,7 @@ async function getOwnerPaymentBusinessLoanDetail(request, reply) {
     );
 
     const message = error?.message || "Failed to load business loan detail";
-    const status = mapServiceErrorToStatus(message);
+    const status = mapServiceErrorToStatus(error);
 
     return reply.status(status).send({
       ok: false,
@@ -186,7 +190,7 @@ async function createOwnerPaymentBusinessLoan(request, reply) {
     request.log.error({ err: error }, "createOwnerPaymentBusinessLoan failed");
 
     const message = error?.message || "Failed to record business loan received";
-    const status = mapServiceErrorToStatus(message);
+    const status = mapServiceErrorToStatus(error);
 
     return reply.status(status).send({
       ok: false,
@@ -228,7 +232,7 @@ async function createOwnerPaymentBusinessLoanRepayment(request, reply) {
 
     const message =
       error?.message || "Failed to record business loan repayment";
-    const status = mapServiceErrorToStatus(message);
+    const status = mapServiceErrorToStatus(error);
 
     return reply.status(status).send({
       ok: false,
@@ -265,7 +269,7 @@ async function voidOwnerPaymentBusinessLoan(request, reply) {
     request.log.error({ err: error }, "voidOwnerPaymentBusinessLoan failed");
 
     const message = error?.message || "Failed to void business loan";
-    const status = mapServiceErrorToStatus(message);
+    const status = mapServiceErrorToStatus(error);
 
     return reply.status(status).send({
       ok: false,

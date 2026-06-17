@@ -2,6 +2,7 @@
 
 const {
   createProductSchema,
+  updateProductSchema,
   adjustInventorySchema,
 } = require("../validators/inventory.schema");
 const {
@@ -49,6 +50,17 @@ function ensureLocationId(request, reply, actionName) {
   return locationId;
 }
 
+function parseProductId(request, reply) {
+  const productId = Number(request.params?.id);
+
+  if (!Number.isFinite(productId) || productId <= 0) {
+    reply.status(400).send({ error: "Invalid product id" });
+    return null;
+  }
+
+  return productId;
+}
+
 async function createProduct(request, reply) {
   const parsed = createProductSchema.safeParse(request.body || {});
   if (!parsed.success) {
@@ -85,6 +97,53 @@ async function createProduct(request, reply) {
       },
       "createProduct failed",
     );
+    return reply.status(500).send({ error: "Internal Server Error" });
+  }
+}
+
+async function updateProduct(request, reply) {
+  const productId = parseProductId(request, reply);
+  if (!productId) return;
+
+  const parsed = updateProductSchema.safeParse(request.body || {});
+  if (!parsed.success) {
+    return reply.status(400).send({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+    });
+  }
+
+  const locationId = ensureLocationId(request, reply, "updateProduct");
+  if (!locationId) return;
+
+  try {
+    const updated = await inventoryService.updateProduct({
+      locationId,
+      userId: request.user?.id ?? null,
+      productId,
+      data: parsed.data,
+    });
+
+    return reply.send({
+      ok: true,
+      product: updated,
+    });
+  } catch (e) {
+    if (e.code === "NOT_FOUND") {
+      return reply.status(404).send({ error: "Product not found" });
+    }
+
+    request.log.error(
+      {
+        err: e,
+        user: request.user,
+        locationId,
+        productId,
+        body: request.body,
+      },
+      "updateProduct failed",
+    );
+
     return reply.status(500).send({ error: "Internal Server Error" });
   }
 }
@@ -198,10 +257,8 @@ async function adjustInventory(request, reply) {
 }
 
 async function updateProductPricing(request, reply) {
-  const productId = Number(request.params?.id);
-  if (!Number.isFinite(productId) || productId <= 0) {
-    return reply.status(400).send({ error: "Invalid product id" });
-  }
+  const productId = parseProductId(request, reply);
+  if (!productId) return;
 
   const parsed = updateProductPricingSchema.safeParse(request.body || {});
   if (!parsed.success) {
@@ -246,10 +303,8 @@ async function updateProductPricing(request, reply) {
 }
 
 async function archiveProduct(request, reply) {
-  const productId = Number(request.params?.id);
-  if (!Number.isFinite(productId) || productId <= 0) {
-    return reply.status(400).send({ error: "Invalid product id" });
-  }
+  const productId = parseProductId(request, reply);
+  if (!productId) return;
 
   const locationId = ensureLocationId(request, reply, "archiveProduct");
   if (!locationId) return;
@@ -283,10 +338,8 @@ async function archiveProduct(request, reply) {
 }
 
 async function restoreProduct(request, reply) {
-  const productId = Number(request.params?.id);
-  if (!Number.isFinite(productId) || productId <= 0) {
-    return reply.status(400).send({ error: "Invalid product id" });
-  }
+  const productId = parseProductId(request, reply);
+  if (!productId) return;
 
   const locationId = ensureLocationId(request, reply, "restoreProduct");
   if (!locationId) return;
@@ -318,10 +371,8 @@ async function restoreProduct(request, reply) {
 }
 
 async function deleteProduct(request, reply) {
-  const productId = Number(request.params?.id);
-  if (!Number.isFinite(productId) || productId <= 0) {
-    return reply.status(400).send({ error: "Invalid product id" });
-  }
+  const productId = parseProductId(request, reply);
+  if (!productId) return;
 
   const locationId = ensureLocationId(request, reply, "deleteProduct");
   if (!locationId) return;
@@ -364,6 +415,7 @@ async function deleteProduct(request, reply) {
 
 module.exports = {
   createProduct,
+  updateProduct,
   listProducts,
   listInventory,
   adjustInventory,

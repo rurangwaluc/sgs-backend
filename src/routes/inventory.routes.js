@@ -1,9 +1,12 @@
 // backend/src/routes/inventory.routes.js
+"use strict";
+
 const ACTIONS = require("../permissions/actions");
 const { requirePermission } = require("../middleware/requirePermission");
 
 const {
   createProduct,
+  updateProduct,
   listProducts,
   listInventory,
   adjustInventory,
@@ -27,14 +30,28 @@ async function inventoryRoutes(app) {
     listProducts,
   );
 
-  // ✅ pricing update (manager/admin/owner)
-  app.put(
-    "/products/:id/pricing",
-    { preHandler: [requirePermission(ACTIONS.PRODUCT_PRICING_UPDATE)] },
-    updateProductPricing,
+  // Product identity/details update: name, SKU, category, notes, catalog metadata.
+  // Admin/owner/manager access is controlled by PRODUCT_UPDATE in policy.
+  app.patch(
+    "/products/:id",
+    { preHandler: [requirePermission(ACTIONS.PRODUCT_UPDATE)] },
+    updateProduct,
   );
 
-  // ✅ archive/restore/delete (you can control permissions here)
+  // // Pricing update.
+  // app.patch(
+  //   "/products/:id/pricing",
+  //   { preHandler: [requirePermission(ACTIONS.PRODUCT_PRICING_UPDATE)] },
+  //   updateProductPricing,
+  // );
+
+  // // Backward compatibility for any old frontend still using PUT.
+  // app.put(
+  //   "/products/:id/pricing",
+  //   { preHandler: [requirePermission(ACTIONS.PRODUCT_PRICING_UPDATE)] },
+  //   updateProductPricing,
+  // );
+
   app.patch(
     "/products/:id/archive",
     { preHandler: [requirePermission(ACTIONS.PRODUCT_UPDATE)] },
@@ -47,7 +64,7 @@ async function inventoryRoutes(app) {
     restoreProduct,
   );
 
-  // Hard delete is dangerous: lock it to admin/owner only
+  // Hard delete is dangerous: lock it through PRODUCT_DELETE.
   app.delete(
     "/products/:id",
     { preHandler: [requirePermission(ACTIONS.PRODUCT_DELETE)] },

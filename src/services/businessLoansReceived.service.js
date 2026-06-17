@@ -58,11 +58,30 @@ function normalizeLenderType(value, customerId) {
 
 function normalizeTimestamp(value, fieldLabel) {
   if (!value) return new Date();
+
   const d = new Date(value);
   if (!Number.isFinite(d.getTime())) {
     throw new Error(`Invalid ${fieldLabel}`);
   }
+
+  const now = new Date();
+  if (d.getTime() > now.getTime() + 60_000) {
+    throw new Error(`${fieldLabel} cannot be in the future`);
+  }
+
   return d;
+}
+
+function normalizeDueDate(value) {
+  const raw = cleanNullableStr(value, 10);
+  if (!raw) return null;
+
+  const d = new Date(`${raw}T00:00:00.000Z`);
+  if (!Number.isFinite(d.getTime())) {
+    throw new Error("Invalid dueDate");
+  }
+
+  return raw;
 }
 
 function requirePositiveInt(value, fieldLabel) {
@@ -74,16 +93,26 @@ function requirePositiveInt(value, fieldLabel) {
 }
 
 function buildLoanStatus(principalAmount, repaidAmount) {
-  if (repaidAmount <= 0) return LOAN_STATUSES.OPEN;
-  if (repaidAmount >= principalAmount) return LOAN_STATUSES.REPAID;
+  const principal = Math.max(0, toInt(principalAmount, 0));
+  const repaid = Math.max(0, toInt(repaidAmount, 0));
+
+  if (repaid <= 0) return LOAN_STATUSES.OPEN;
+  if (repaid >= principal) return LOAN_STATUSES.REPAID;
   return LOAN_STATUSES.PARTIALLY_REPAID;
 }
 
 function mapLoanRow(row) {
   if (!row) return null;
 
-  const principalAmount = toInt(row.principalAmount ?? row.principal_amount, 0);
-  const repaidAmount = toInt(row.repaidAmount ?? row.repaid_amount, 0);
+  const principalAmount = Math.max(
+    0,
+    toInt(row.principalAmount ?? row.principal_amount, 0),
+  );
+  const rawRepaidAmount = Math.max(
+    0,
+    toInt(row.repaidAmount ?? row.repaid_amount, 0),
+  );
+  const repaidAmount = Math.min(rawRepaidAmount, principalAmount);
 
   return {
     id: toInt(row.id, null),
@@ -122,7 +151,7 @@ function mapRepaymentRow(row) {
     id: toInt(row.id, null),
     locationId: toInt(row.locationId ?? row.location_id, null),
     businessLoanId: toInt(row.businessLoanId ?? row.business_loan_id, null),
-    amount: toInt(row.amount, 0),
+    amount: Math.max(0, toInt(row.amount, 0)),
     method: cleanStr(row.method),
     paidAt: row.paidAt ?? row.paid_at ?? null,
     reference: cleanStr(row.reference),
@@ -148,12 +177,64 @@ function buildAutoReference({ locationCode, locationId, loanId }) {
   return `BLR-${code}-${pad3(loanId)}`;
 }
 
-async function createCashLedgerEntry(tx, payload) {
-  const note = cleanNullableStr(payload.note, 500);
-  const cashierId = toInt(payload.cashierId, null);
+function formatRwf(value) {
+  return `${Math.max(0, toInt(value, 0)).toLocaleString()} RWF`;
+}
 
-  if (!cashierId || cashierId <= 0) {
-    throw new Error("Acting user is required for cash ledger entry");
+async function getAvailableBusinessMoney(tx, locationId) {
+  const safeLocationId = requirePositiveInt(locationId, "locationId");
+
+  const result = await tx.execute(sql`
+    SELECT
+      COALESCE(
+        SUM(
+          CASE
+            WHEN direction = 'IN' THEN amount
+            WHEN direction = 'OUT' THEN -amount
+            ELSE 0
+          END
+        ),
+        0
+      )::bigint AS balance
+    FROM cash_ledger
+    WHERE location_id = ${safeLocationId}
+  `);
+
+  return Math.max(0, toInt(firstRow(result)?.balance, 0));
+}
+
+async function ensureEnoughBusinessMoney(tx, locationId, requestedAmount) {
+  const amount = requirePositiveInt(requestedAmount, "amount");
+  const available = await getAvailableBusinessMoney(tx, locationId);
+
+  if (amount > available) {
+    const err = new Error(
+      `Insufficient funds. Available: ${formatRwf(available)}. Requested: ${formatRwf(amount)}.`,
+    );
+    err.code = "INSUFFICIENT_FUNDS";
+    err.availableAmount = available;
+    err.requestedAmount = amount;
+    throw err;
+  }
+
+  return available;
+}
+
+async function createCashLedgerEntry(tx, payload) {
+  const locationId = requirePositiveInt(payload.locationId, "locationId");
+  const cashierId = requirePositiveInt(payload.cashierId, "cashierId");
+  const amount = requirePositiveInt(payload.amount, "amount");
+  const direction = cleanStr(payload.direction).toUpperCase();
+  const type = cleanStr(payload.type, 40).toUpperCase();
+  const method = normalizeMethod(payload.method);
+  const note = cleanNullableStr(payload.note, 500);
+
+  if (!["IN", "OUT"].includes(direction)) {
+    throw new Error("Invalid cash ledger direction");
+  }
+
+  if (!type) {
+    throw new Error("Cash ledger type is required");
   }
 
   const result = await tx.execute(sql`
@@ -169,12 +250,12 @@ async function createCashLedgerEntry(tx, payload) {
       business_loan_repayment_id
     )
     VALUES (
-      ${payload.locationId},
+      ${locationId},
       ${cashierId},
-      ${payload.direction},
-      ${payload.type},
-      ${payload.method},
-      ${payload.amount},
+      ${direction},
+      ${type},
+      ${method},
+      ${amount},
       ${note},
       ${payload.businessLoanReceivedId ?? null},
       ${payload.businessLoanRepaymentId ?? null}
@@ -209,9 +290,9 @@ async function receiveBusinessLoan(input = {}, actor = {}) {
   const receiptMethod = normalizeMethod(input.receiptMethod || input.method);
   const receivedAt = normalizeTimestamp(
     input.receivedAt || input.issueDate,
-    "issueDate",
+    "receivedAt",
   );
-  const dueDate = cleanNullableStr(input.dueDate, 10);
+  const dueDate = normalizeDueDate(input.dueDate);
   const note = cleanNullableStr(input.note, 4000);
 
   if (!lenderName) {
@@ -410,6 +491,8 @@ async function repayBusinessLoan(input = {}, actor = {}) {
       throw new Error("Repayment amount exceeds remaining balance");
     }
 
+    await ensureEnoughBusinessMoney(tx, currentLoan.locationId, amount);
+
     const repaymentReference = `BLRP-${normalizeBranchCode(
       currentLoan.locationCode,
       currentLoan.locationId,
@@ -444,7 +527,10 @@ async function repayBusinessLoan(input = {}, actor = {}) {
       throw new Error("Failed to create business loan repayment");
     }
 
-    const newRepaidAmount = currentLoan.repaidAmount + amount;
+    const newRepaidAmount = Math.min(
+      currentLoan.principalAmount,
+      currentLoan.repaidAmount + amount,
+    );
     const newStatus = buildLoanStatus(
       currentLoan.principalAmount,
       newRepaidAmount,
@@ -570,6 +656,12 @@ async function voidBusinessLoan(input = {}, actor = {}) {
         "Business loan already has repayment history. Void is blocked.",
       );
     }
+
+    await ensureEnoughBusinessMoney(
+      tx,
+      currentLoan.locationId,
+      currentLoan.principalAmount,
+    );
 
     const updatedLoanRes = await tx.execute(sql`
       UPDATE business_loans_received
@@ -707,9 +799,12 @@ async function getBusinessLoansReceivedSummary(filters = {}) {
   const result = await db.execute(sql`
     SELECT
       COUNT(*)::int AS "loansCount",
-      COALESCE(SUM(principal_amount), 0)::bigint AS "principalTotal",
-      COALESCE(SUM(repaid_amount), 0)::bigint AS "repaidTotal",
-      COALESCE(SUM(principal_amount - repaid_amount), 0)::bigint AS "remainingTotal",
+      COALESCE(SUM(GREATEST(principal_amount, 0)), 0)::bigint AS "principalTotal",
+      COALESCE(SUM(GREATEST(repaid_amount, 0)), 0)::bigint AS "repaidTotal",
+      COALESCE(
+        SUM(GREATEST(principal_amount - repaid_amount, 0)),
+        0
+      )::bigint AS "remainingTotal",
       COALESCE(SUM(CASE WHEN status = 'OPEN' THEN 1 ELSE 0 END), 0)::int AS "openCount",
       COALESCE(SUM(CASE WHEN status = 'PARTIALLY_REPAID' THEN 1 ELSE 0 END), 0)::int AS "partiallyRepaidCount",
       COALESCE(SUM(CASE WHEN status = 'REPAID' THEN 1 ELSE 0 END), 0)::int AS "repaidCount",
@@ -722,14 +817,14 @@ async function getBusinessLoansReceivedSummary(filters = {}) {
   const row = firstRow(result, {});
 
   return {
-    loansCount: toInt(row.loansCount, 0),
-    principalTotal: toInt(row.principalTotal, 0),
-    repaidTotal: toInt(row.repaidTotal, 0),
-    remainingTotal: toInt(row.remainingTotal, 0),
-    openCount: toInt(row.openCount, 0),
-    partiallyRepaidCount: toInt(row.partiallyRepaidCount, 0),
-    repaidCount: toInt(row.repaidCount, 0),
-    voidCount: toInt(row.voidCount, 0),
+    loansCount: Math.max(0, toInt(row.loansCount, 0)),
+    principalTotal: Math.max(0, toInt(row.principalTotal, 0)),
+    repaidTotal: Math.max(0, toInt(row.repaidTotal, 0)),
+    remainingTotal: Math.max(0, toInt(row.remainingTotal, 0)),
+    openCount: Math.max(0, toInt(row.openCount, 0)),
+    partiallyRepaidCount: Math.max(0, toInt(row.partiallyRepaidCount, 0)),
+    repaidCount: Math.max(0, toInt(row.repaidCount, 0)),
+    voidCount: Math.max(0, toInt(row.voidCount, 0)),
   };
 }
 

@@ -96,6 +96,102 @@ function mapProductRow(row, includePurchasePrice = true) {
   };
 }
 
+function buildProductUpdatePayload(data = {}) {
+  const updates = {};
+
+  if (data.name !== undefined) {
+    updates.name = cleanText(data.name, 160);
+  }
+
+  if (data.sku !== undefined) {
+    updates.sku = cleanText(data.sku, 80);
+  }
+
+  if (data.unit !== undefined || data.stockUnit !== undefined) {
+    updates.unit = normalizeUnit(data.stockUnit || data.unit || "PIECE");
+  }
+
+  if (data.productType !== undefined) {
+    updates.productType = cleanText(data.productType, 40) || "HARDWARE";
+  }
+
+  if (data.category !== undefined) {
+    updates.category = normalizeCategory(data.category);
+  }
+
+  if (data.subcategory !== undefined) {
+    updates.subcategory = cleanText(data.subcategory, 80);
+  }
+
+  if (data.brand !== undefined) {
+    updates.brand = cleanText(data.brand, 80);
+  }
+
+  if (data.model !== undefined) {
+    updates.model = cleanText(data.model, 120);
+  }
+
+  if (data.variantLabel !== undefined || data.variantSummary !== undefined) {
+    updates.variantLabel =
+      cleanText(data.variantLabel, 120) || cleanText(data.variantSummary, 120);
+  }
+
+  if (data.size !== undefined) {
+    updates.size = cleanText(data.size, 40);
+  }
+
+  if (data.color !== undefined) {
+    updates.color = cleanText(data.color, 40);
+  }
+
+  if (data.material !== undefined) {
+    updates.material = cleanText(data.material, 80);
+  }
+
+  if (data.barcode !== undefined) {
+    updates.barcode = cleanText(data.barcode, 120);
+  }
+
+  if (data.supplierCode !== undefined || data.supplierSku !== undefined) {
+    updates.supplierCode =
+      cleanText(data.supplierCode, 120) || cleanText(data.supplierSku, 120);
+  }
+
+  if (data.reorderLevel !== undefined) {
+    updates.reorderLevel = normalizePositiveInt(data.reorderLevel, 0);
+  }
+
+  if (data.sellingPrice !== undefined) {
+    updates.sellingPrice = normalizePositiveInt(data.sellingPrice, 0);
+  }
+
+  if (data.costPrice !== undefined || data.purchasePrice !== undefined) {
+    updates.costPrice = normalizePositiveInt(
+      data.costPrice ?? data.purchasePrice,
+      0,
+    );
+  }
+
+  if (data.maxDiscountPercent !== undefined) {
+    updates.maxDiscountPercent = normalizePositiveInt(
+      data.maxDiscountPercent,
+      0,
+    );
+  }
+
+  if (data.maxDiscountAmount !== undefined) {
+    updates.maxDiscountAmount = normalizePositiveInt(data.maxDiscountAmount, 0);
+  }
+
+  if (data.notes !== undefined) {
+    updates.notes = cleanText(data.notes, 4000);
+  }
+
+  updates.updatedAt = new Date();
+
+  return updates;
+}
+
 async function createProduct({ locationId, userId, data }) {
   return db.transaction(async (tx) => {
     const openingQty = normalizePositiveInt(data.openingQty, 0);
@@ -200,6 +296,56 @@ async function createProduct({ locationId, userId, data }) {
       },
       true,
     );
+  });
+}
+
+async function updateProduct({ locationId, userId, productId, data }) {
+  return db.transaction(async (tx) => {
+    const found = await tx
+      .select()
+      .from(products)
+      .where(
+        and(eq(products.id, productId), eq(products.locationId, locationId)),
+      );
+
+    if (!found[0]) {
+      const err = new Error("Product not found");
+      err.code = "NOT_FOUND";
+      throw err;
+    }
+
+    const updates = buildProductUpdatePayload(data);
+
+    if (Object.keys(updates).length <= 1) {
+      return mapProductRow(found[0], true);
+    }
+
+    const [updated] = await tx
+      .update(products)
+      .set(updates)
+      .where(
+        and(eq(products.id, productId), eq(products.locationId, locationId)),
+      )
+      .returning();
+
+    const beforeName = buildProductDisplayName(found[0]) || found[0].name;
+    const afterName = buildProductDisplayName(updated) || updated.name;
+
+    await safeLogAudit({
+      userId,
+      action: "PRODUCT_UPDATE",
+      entity: "product",
+      entityId: productId,
+      description: `Updated product: ${beforeName} → ${afterName}`,
+      meta: {
+        productId,
+        locationId,
+        changedFields: Object.keys(updates).filter((k) => k !== "updatedAt"),
+      },
+      locationId,
+    });
+
+    return mapProductRow(updated, true);
   });
 }
 
@@ -691,6 +837,7 @@ async function deleteProductIfSafe({ locationId, userId, productId }) {
 
 module.exports = {
   createProduct,
+  updateProduct,
   listProducts,
   updateProductPricing,
   getInventoryBalances,
