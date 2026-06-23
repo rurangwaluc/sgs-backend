@@ -226,10 +226,45 @@ async function getBusinessLoanReceivedById(request, reply) {
   }
 }
 
+async function voidBusinessLoanReceived(request, reply) {
+  try {
+    const actor = buildActor(request);
+
+    const payload = {
+      businessLoanId: request.params?.id,
+      reason:
+        request.body?.reason || request.body?.voidReason || request.body?.note,
+    };
+
+    const loan = await businessLoansReceivedService.voidBusinessLoan(
+      payload,
+      actor,
+    );
+
+    return reply.send({
+      ok: true,
+      message: "Business loan voided successfully",
+      loan,
+    });
+  } catch (error) {
+    request.log.error({ err: error }, "voidBusinessLoanReceived failed");
+
+    const message = error?.message || "Failed to void business loan";
+
+    const status = mapServiceErrorToStatus(message);
+
+    return reply.status(status).send({
+      ok: false,
+      error: message,
+    });
+  }
+}
+
 module.exports = {
   createBusinessLoanReceived,
   createBusinessLoanRepayment,
   listBusinessLoansReceived,
   getBusinessLoanReceivedSummary,
   getBusinessLoanReceivedById,
+  voidBusinessLoanReceived,
 };

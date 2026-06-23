@@ -181,39 +181,67 @@ function formatRwf(value) {
   return `${Math.max(0, toInt(value, 0)).toLocaleString()} RWF`;
 }
 
-async function getAvailableBusinessMoney(tx, locationId) {
+async function getAvailableBusinessMoneyByMethod(tx, locationId, method) {
   const safeLocationId = requirePositiveInt(locationId, "locationId");
 
+  const safeMethod = normalizeMethod(method);
+
   const result = await tx.execute(sql`
-    SELECT
-      COALESCE(
-        SUM(
-          CASE
-            WHEN direction = 'IN' THEN amount
-            WHEN direction = 'OUT' THEN -amount
-            ELSE 0
-          END
-        ),
-        0
-      )::bigint AS balance
-    FROM cash_ledger
-    WHERE location_id = ${safeLocationId}
-  `);
+      SELECT
+        COALESCE(
+          SUM(
+            CASE
+              WHEN direction='IN'
+              THEN amount
+
+              WHEN direction='OUT'
+              THEN -amount
+
+              ELSE 0
+            END
+          ),
+          0
+        )::bigint AS balance
+
+      FROM cash_ledger
+
+      WHERE
+        location_id=${safeLocationId}
+
+      AND
+        method=${safeMethod}
+    `);
 
   return Math.max(0, toInt(firstRow(result)?.balance, 0));
 }
 
-async function ensureEnoughBusinessMoney(tx, locationId, requestedAmount) {
+async function ensureEnoughBusinessMoneyByMethod(
+  tx,
+  locationId,
+  method,
+  requestedAmount,
+) {
   const amount = requirePositiveInt(requestedAmount, "amount");
-  const available = await getAvailableBusinessMoney(tx, locationId);
+
+  const available = await getAvailableBusinessMoneyByMethod(
+    tx,
+    locationId,
+    method,
+  );
 
   if (amount > available) {
     const err = new Error(
-      `Insufficient funds. Available: ${formatRwf(available)}. Requested: ${formatRwf(amount)}.`,
+      `Insufficient ${method} balance. Available: ${formatRwf(
+        available,
+      )}. Requested: ${formatRwf(amount)}.`,
     );
+
     err.code = "INSUFFICIENT_FUNDS";
+
     err.availableAmount = available;
+
     err.requestedAmount = amount;
+
     throw err;
   }
 
@@ -491,7 +519,15 @@ async function repayBusinessLoan(input = {}, actor = {}) {
       throw new Error("Repayment amount exceeds remaining balance");
     }
 
-    await ensureEnoughBusinessMoney(tx, currentLoan.locationId, amount);
+    await ensureEnoughBusinessMoneyByMethod(
+      tx,
+
+      currentLoan.locationId,
+
+      currentLoan.receiptMethod,
+
+      currentLoan.principalAmount,
+    );
 
     const repaymentReference = `BLRP-${normalizeBranchCode(
       currentLoan.locationCode,
@@ -657,10 +693,14 @@ async function voidBusinessLoan(input = {}, actor = {}) {
       );
     }
 
-    await ensureEnoughBusinessMoney(
+    await ensureEnoughBusinessMoneyByMethod(
       tx,
+
       currentLoan.locationId,
-      currentLoan.principalAmount,
+
+      method,
+
+      amount,
     );
 
     const updatedLoanRes = await tx.execute(sql`

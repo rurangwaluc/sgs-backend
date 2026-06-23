@@ -19,7 +19,7 @@ function normalizeRole(role) {
     .toLowerCase();
 }
 
-async function ownerOrAdminOnly(request, reply) {
+async function ownerOnly(request, reply) {
   const user = getSessionUser(request);
 
   if (!user) {
@@ -31,10 +31,10 @@ async function ownerOrAdminOnly(request, reply) {
 
   const role = normalizeRole(user.role);
 
-  if (!["owner", "admin"].includes(role)) {
+  if (role !== "owner") {
     return reply.status(403).send({
       ok: false,
-      error: "Owner or admin access required",
+      error: "Owner access required",
     });
   }
 }
@@ -43,7 +43,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.get(
     "/owner/payments/business-loans",
     {
-      preHandler: ownerOrAdminOnly,
+      preHandler: ownerOnly,
     },
     listOwnerPaymentBusinessLoans,
   );
@@ -51,7 +51,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.get(
     "/owner/payments/business-loans/summary",
     {
-      preHandler: ownerOrAdminOnly,
+      preHandler: ownerOnly,
     },
     getOwnerPaymentBusinessLoansSummary,
   );
@@ -59,7 +59,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.get(
     "/owner/payments/business-loans/:id",
     {
-      preHandler: ownerOrAdminOnly,
+      preHandler: ownerOnly,
     },
     getOwnerPaymentBusinessLoanDetail,
   );
@@ -67,7 +67,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.post(
     "/owner/payments/business-loans",
     {
-      preHandler: ownerOrAdminOnly,
+      preHandler: ownerOnly,
     },
     createOwnerPaymentBusinessLoan,
   );
@@ -75,7 +75,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.post(
     "/owner/payments/business-loans/:id/repayments",
     {
-      preHandler: ownerOrAdminOnly,
+      preHandler: ownerOnly,
     },
     createOwnerPaymentBusinessLoanRepayment,
   );
@@ -83,7 +83,7 @@ async function ownerPaymentsBusinessLoansRoutes(app) {
   app.post(
     "/owner/payments/business-loans/:id/void",
     {
-      preHandler: ownerOrAdminOnly,
+      preHandler: ownerOnly,
     },
     voidOwnerPaymentBusinessLoan,
   );

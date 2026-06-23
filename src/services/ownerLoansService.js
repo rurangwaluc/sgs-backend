@@ -611,6 +611,14 @@ async function createOwnerLoan({ actorUser, payload }) {
 
   const data = parsed.data;
 
+  if (!data.method) {
+    const err = new Error("Payment method is required");
+
+    err.statusCode = 400;
+
+    throw err;
+  }
+
   const scope = resolveOwnerLoanScope({
     actorUser,
     locationId: data.locationId,
@@ -836,11 +844,18 @@ async function updateOwnerLoan({ id, actorUser, payload }) {
     Number(nextLocationId) !== Number(existing.locationId);
 
   if (!hasRepayments && (amountIncreased || methodChanged || locationChanged)) {
-    await assertEnoughAvailableBalance({
-      locationId: nextLocationId,
-      method: nextDisbursementMethod,
-      amount: nextPrincipalAmount,
-    });
+    const additionalAmount = Math.max(
+      0,
+      nextPrincipalAmount - moneyInt(existing.principalAmount),
+    );
+
+    if (additionalAmount > 0) {
+      await assertEnoughAvailableBalance({
+        locationId: nextLocationId,
+        method: nextDisbursementMethod,
+        amount: additionalAmount,
+      });
+    }
   }
 
   const [row] = await db
@@ -1080,69 +1095,115 @@ async function createOwnerLoanRepayment({ id, actorUser, payload }) {
 
 async function voidOwnerLoan({ id, actorUser, payload }) {
   const loanId = requireValidLoanId(id);
+
   const parsed = ownerLoanVoidSchema.safeParse(payload || {});
 
   if (!parsed.success) {
     const err = new Error(
       parsed.error.issues?.[0]?.message || "Invalid payload",
     );
+
     err.statusCode = 400;
+
     throw err;
   }
 
   const data = parsed.data;
 
-  const loan = await getScopedLoanOrThrow({
-    loanId,
-    actorUser,
-    locationId: data.locationId ?? actorUser?.locationId ?? null,
+  const createdByUserId = actorUser?.id ? Number(actorUser.id) : null;
+
+  const result = await db.transaction(async (tx) => {
+    const loan = await getScopedLoanOrThrow({
+      loanId,
+      actorUser,
+      locationId: data.locationId ?? actorUser?.locationId ?? null,
+      tx,
+    });
+
+    if (moneyInt(loan.repaidAmount) > 0) {
+      const err = new Error(
+        "Loan already has repayment history. Void is blocked.",
+      );
+
+      err.statusCode = 409;
+
+      throw err;
+    }
+
+    await createCashLedgerEntryIfPossible({
+      tx,
+
+      locationId: loan.locationId,
+
+      actorUser,
+
+      amount: loan.principalAmount,
+
+      direction: "IN",
+
+      method: loan.disbursementMethod,
+
+      note: `Owner loan voided for ${loan.receiverName || "receiver"}`,
+
+      reference: loan.reference,
+    });
+
+    const [row] = await tx
+      .update(ownerLoans)
+      .set({
+        status: "VOID",
+
+        note: cleanStr(
+          [loan.note, `VOID REASON: ${cleanStr(data.reason)}`]
+            .filter(Boolean)
+            .join(" | "),
+        ),
+
+        updatedAt: sql`now()`,
+      })
+      .where(eq(ownerLoans.id, loanId))
+      .returning();
+
+    return row;
   });
 
-  if (moneyInt(loan.repaidAmount) > 0) {
-    const err = new Error(
-      "Loan already has repayment history. Void is blocked.",
-    );
-    err.statusCode = 409;
-    throw err;
-  }
-
-  const [row] = await db
-    .update(ownerLoans)
-    .set({
-      status: "VOID",
-      note: cleanStr(
-        [loan.note, `VOID REASON: ${cleanStr(data.reason)}`]
-          .filter(Boolean)
-          .join(" | "),
-      ),
-      updatedAt: sql`now()`,
-    })
-    .where(eq(ownerLoans.id, loanId))
-    .returning();
-
-  if (!row) {
+  if (!result) {
     const err = new Error("Owner loan not found");
+
     err.statusCode = 404;
+
     throw err;
   }
 
   await safeLogAudit({
-    locationId: row.locationId,
-    userId: actorUser?.id || null,
+    locationId: result.locationId,
+
+    userId: createdByUserId,
+
     action: AUDIT.OWNER_LOAN_VOID || "OWNER_LOAN_VOID",
+
     entity: "owner_loan",
-    entityId: row.id,
-    description: `Voided owner loan #${row.id}`,
+
+    entityId: result.id,
+
+    description: `Voided owner loan #${result.id}`,
+
     meta: {
-      receiverType: row.receiverType,
-      receiverName: row.receiverName,
-      principalAmount: row.principalAmount,
-      status: row.status,
+      receiverType: result.receiverType,
+
+      receiverName: result.receiverName,
+
+      principalAmount: result.principalAmount,
+
+      status: result.status,
+
       reason: data.reason,
     },
   });
 
-  return { loan: row };
+  return {
+    loan: result,
+  };
 }
 
 async function ownerLoanSummary({
