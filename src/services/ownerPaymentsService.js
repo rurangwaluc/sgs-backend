@@ -156,6 +156,56 @@ function buildMovementsQuery({
 
       UNION ALL
 
+      /* CREDIT CUSTOMER PAYMENTS -> IN */
+      SELECT
+        cp.id::bigint as id,
+        'CUSTOMER_CREDIT_PAYMENT'::text as "movementType",
+        'IN'::text as direction,
+
+        cp.sale_id::bigint as "saleId",
+        NULL::bigint as "billId",
+        NULL::bigint as "expenseId",
+        NULL::bigint as "refundId",
+        NULL::bigint as "depositId",
+        NULL::bigint as "ownerLoanId",
+        NULL::bigint as "repaymentId",
+
+        cp.location_id::bigint as "locationId",
+        l.name as "locationName",
+        l.code as "locationCode",
+
+        cp.received_by::bigint as "actorUserId",
+        u.name as "actorName",
+
+        cp.received_by::bigint as "cashierId",
+        u.name as "cashierName",
+
+        COALESCE(c.name, s.customer_name)::text as "customerName",
+        COALESCE(c.phone, s.customer_phone)::text as "customerPhone",
+
+        NULL::text as "supplierName",
+        NULL::text as "payeeName",
+
+        COALESCE(cp.amount, 0)::bigint as amount,
+        UPPER(COALESCE(cp.method::text, 'OTHER'))::text as method,
+        cp.reference::text as reference,
+        cp.note::text as note,
+        cp.cash_session_id::bigint as "cashSessionId",
+        cp.created_at as "createdAt"
+      FROM credit_payments cp
+      JOIN locations l
+        ON l.id = cp.location_id
+      LEFT JOIN users u
+        ON u.id = cp.received_by
+      LEFT JOIN sales s
+        ON s.id = cp.sale_id
+       AND s.location_id = cp.location_id
+      LEFT JOIN customers c
+        ON c.id = s.customer_id
+       AND c.location_id = s.location_id
+
+      UNION ALL
+
       /* SUPPLIER BILL PAYMENTS -> OUT */
       SELECT
         sbp.id::bigint as id,
@@ -530,7 +580,7 @@ async function getOwnerPaymentsSummary({
           COUNT(*)::int as "movementsCount",
           COUNT(*) FILTER (WHERE omm.direction = 'IN')::int as "moneyInCount",
           COUNT(*) FILTER (WHERE omm.direction = 'OUT')::int as "moneyOutCount",
-          COUNT(*) FILTER (WHERE omm."movementType" IN ('CUSTOMER_PAYMENT', 'OWNER_LOAN_REPAYMENT_IN'))::int as "paymentsCount",
+          COUNT(*) FILTER (WHERE omm."movementType" IN ('CUSTOMER_PAYMENT', 'CUSTOMER_CREDIT_PAYMENT', 'OWNER_LOAN_REPAYMENT_IN'))::int as "paymentsCount",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyIn",
           COALESCE(SUM(CASE WHEN omm.direction = 'OUT' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyOut",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE -omm.amount END), 0)::bigint as "netAmount"
@@ -553,7 +603,7 @@ async function getOwnerPaymentsSummary({
           COUNT(*)::int as "movementsCount",
           COUNT(*) FILTER (WHERE omm.direction = 'IN')::int as "moneyInCount",
           COUNT(*) FILTER (WHERE omm.direction = 'OUT')::int as "moneyOutCount",
-          COUNT(*) FILTER (WHERE omm."movementType" IN ('CUSTOMER_PAYMENT', 'OWNER_LOAN_REPAYMENT_IN'))::int as "paymentsCount",
+          COUNT(*) FILTER (WHERE omm."movementType" IN ('CUSTOMER_PAYMENT', 'CUSTOMER_CREDIT_PAYMENT', 'OWNER_LOAN_REPAYMENT_IN'))::int as "paymentsCount",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyIn",
           COALESCE(SUM(CASE WHEN omm.direction = 'OUT' THEN omm.amount ELSE 0 END), 0)::bigint as "totalMoneyOut",
           COALESCE(SUM(CASE WHEN omm.direction = 'IN' THEN omm.amount ELSE -omm.amount END), 0)::bigint as "netAmount"

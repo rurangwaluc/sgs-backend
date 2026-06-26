@@ -222,14 +222,24 @@ async function getCreditById({ locationId, creditId }) {
   const payRes = await db.execute(sql`
     SELECT
       cp.id,
+      cp.sale_id as "saleId",
+      cp.installment_id as "installmentId",
+      ci.installment_no as "installmentNo",
       cp.amount,
       cp.method,
       cp.note,
       cp.reference,
       cp.created_at as "createdAt",
       cp.received_by as "receivedBy",
+      u.name as "receivedByName",
+      u.email as "receivedByEmail",
       cp.cash_session_id as "cashSessionId"
     FROM credit_payments cp
+    LEFT JOIN users u
+      ON u.id = cp.received_by
+    LEFT JOIN credit_installments ci
+      ON ci.id = cp.installment_id
+      AND ci.location_id = cp.location_id
     WHERE cp.location_id = ${locationId}
       AND cp.credit_id = ${id}
     ORDER BY cp.id ASC
@@ -238,6 +248,9 @@ async function getCreditById({ locationId, creditId }) {
   const payRaw = rowsOf(payRes);
   const payments = payRaw.map((p) => ({
     id: toInt(p.id, null),
+    saleId: toInt(p.saleId ?? p.sale_id, null),
+    installmentId: toInt(p.installmentId ?? p.installment_id, null),
+    installmentNo: toInt(p.installmentNo ?? p.installment_no, null),
     amount: toNum(p.amount ?? 0, 0),
     method: p.method ?? null,
     note: p.note ?? null,
@@ -247,6 +260,8 @@ async function getCreditById({ locationId, creditId }) {
       p.receivedBy ?? p.received_by ?? p.cashierId ?? p.cashier_id,
       null,
     ),
+    receivedByName: p.receivedByName ?? p.received_by_name ?? null,
+    receivedByEmail: p.receivedByEmail ?? p.received_by_email ?? null,
     cashSessionId: toInt(p.cashSessionId ?? p.cash_session_id, null),
   }));
 

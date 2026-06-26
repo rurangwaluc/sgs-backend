@@ -440,6 +440,10 @@ async function createCredit({
   creditMode = "OPEN_BALANCE",
   dueDate,
   note,
+  amountPaidNow = 0,
+  paymentMethodNow = "CASH",
+  cashSessionId,
+  reference,
   installmentCount,
   installmentAmount,
   firstInstallmentDate,
@@ -454,7 +458,25 @@ async function createCredit({
   const mode = normCreditMode(creditMode);
   const cleanNote = toNote(note);
   const due = toDueDate(dueDate);
+  const upfrontAmount = Math.round(Number(amountPaidNow || 0));
+  const upfrontMethod = normMethod(paymentMethodNow);
+  const upfrontSessionId = toNullableInt(cashSessionId);
+  const cleanReference = toNote(reference, 120);
   const now = new Date();
+
+  if (!Number.isFinite(upfrontAmount) || upfrontAmount < 0) {
+    const err = new Error("Upfront payment must be zero or greater");
+    err.code = "BAD_AMOUNT";
+    err.debug = { amountPaidNow };
+    throw err;
+  }
+
+  if (!["CASH", "MOMO", "CARD", "BANK", "OTHER"].includes(upfrontMethod)) {
+    const err = new Error("Payment method is required");
+    err.code = "BAD_PAYMENT_METHOD";
+    err.debug = { paymentMethodNow };
+    throw err;
+  }
 
   return db.transaction(async (tx) => {
     const saleRows = await tx
@@ -533,6 +555,39 @@ async function createCredit({
 
     const principal = Number(sale.totalAmount || 0) || 0;
 
+    if (!Number.isFinite(principal) || principal <= 0) {
+      const err = new Error("Sale total is invalid");
+      err.code = "BAD_AMOUNT";
+      err.debug = { saleId: sid, totalAmount: sale.totalAmount };
+      throw err;
+    }
+
+    if (upfrontAmount > principal) {
+      const err = new Error("Upfront payment cannot exceed sale total");
+      err.code = "OVERPAYMENT";
+      err.debug = {
+        saleId: sid,
+        totalAmount: principal,
+        amountPaidNow: upfrontAmount,
+      };
+      throw err;
+    }
+
+    const remainingPrincipal = Math.max(0, principal - upfrontAmount);
+
+    if (remainingPrincipal <= 0) {
+      const err = new Error(
+        "Remaining credit balance must be greater than zero",
+      );
+      err.code = "BAD_AMOUNT";
+      err.debug = {
+        saleId: sid,
+        totalAmount: principal,
+        amountPaidNow: upfrontAmount,
+      };
+      throw err;
+    }
+
     const [created] = await tx
       .insert(credits)
       .values({
@@ -540,8 +595,8 @@ async function createCredit({
         saleId: sid,
         customerId: sale.customerId,
         principalAmount: principal,
-        paidAmount: 0,
-        remainingAmount: principal,
+        paidAmount: upfrontAmount,
+        remainingAmount: remainingPrincipal,
         creditMode: mode,
         dueDate: due,
         status: "PENDING",
@@ -551,9 +606,47 @@ async function createCredit({
       })
       .returning();
 
+    let upfrontPayment = null;
+
+    if (upfrontAmount > 0) {
+      const [createdUpfrontPayment] = await tx
+        .insert(creditPayments)
+        .values({
+          locationId,
+          creditId: Number(created.id),
+          saleId: sid,
+          amount: upfrontAmount,
+          method: upfrontMethod,
+          cashSessionId: upfrontSessionId,
+          receivedBy: sellerId,
+          reference: cleanReference,
+          note: cleanNote || "Paid at credit sale time",
+          createdAt: now,
+        })
+        .returning();
+
+      upfrontPayment = createdUpfrontPayment || null;
+
+      await tx.insert(cashLedger).values({
+        locationId,
+        cashierId: sellerId,
+        cashSessionId: upfrontSessionId,
+        type: "CREDIT_PAYMENT",
+        direction: "IN",
+        amount: upfrontAmount,
+        method: upfrontMethod,
+        reference: cleanReference,
+        saleId: sid,
+        creditId: Number(created.id),
+        creditPaymentId: upfrontPayment?.id ? Number(upfrontPayment.id) : null,
+        note: cleanNote || "Credit sale upfront payment",
+        createdAt: now,
+      });
+    }
+
     if (mode === "INSTALLMENT_PLAN") {
       const planRows = buildInstallments({
-        principalAmount: principal,
+        principalAmount: remainingPrincipal,
         firstDueDate: firstInstallmentDate || dueDate,
         installmentCount,
         installmentAmount,
@@ -595,6 +688,10 @@ async function createCredit({
         saleId: sid,
         customerId: sale.customerId,
         principalAmount: principal,
+        paidAmount: upfrontAmount,
+        remainingAmount: remainingPrincipal,
+        paymentMethod: upfrontAmount > 0 ? upfrontMethod : null,
+        creditPaymentId: upfrontPayment?.id ? Number(upfrontPayment.id) : null,
         dueDate: due ? due.toISOString() : null,
         creditMode: mode,
         installmentCount:
@@ -616,8 +713,8 @@ async function createCredit({
       title: `Credit request created for Sale #${sid}`,
       body:
         mode === "INSTALLMENT_PLAN"
-          ? `Installment credit request created. Amount: ${principal}. Credit ID: ${created.id}.`
-          : `Open-balance credit request created. Amount: ${principal}. Credit ID: ${created.id}.`,
+          ? `Installment credit request created. Sale amount: ${principal}. Remaining credit: ${remainingPrincipal}. Credit ID: ${created.id}.`
+          : `Open-balance credit request created. Sale amount: ${principal}. Remaining credit: ${remainingPrincipal}. Credit ID: ${created.id}.`,
       priority: "warn",
       entity: "credit",
       entityId: Number(created.id),

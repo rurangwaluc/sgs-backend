@@ -34,6 +34,10 @@ async function createCredit(request, reply) {
       creditMode: parsed.data.creditMode,
       dueDate: parsed.data.dueDate,
       note: parsed.data.note,
+      amountPaidNow: parsed.data.amountPaidNow,
+      paymentMethodNow: parsed.data.paymentMethodNow,
+      cashSessionId: parsed.data.cashSessionId,
+      reference: parsed.data.reference,
       installments: parsed.data.installments,
       installmentCount: parsed.data.installmentCount,
       installmentAmount: parsed.data.installmentAmount,
@@ -66,6 +70,27 @@ async function createCredit(request, reply) {
     if (e.code === "CUSTOMER_NOT_FOUND") {
       return reply.status(404).send({
         error: "Customer not found for this sale",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "BAD_PAYMENT_METHOD") {
+      return reply.status(400).send({
+        error: e.message || "Payment method is required",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "BAD_AMOUNT") {
+      return reply.status(400).send({
+        error: e.message || "Invalid amount",
+        debug: e.debug,
+      });
+    }
+
+    if (e.code === "OVERPAYMENT") {
+      return reply.status(409).send({
+        error: e.message || "Payment cannot exceed remaining credit balance",
         debug: e.debug,
       });
     }
@@ -192,6 +217,13 @@ async function recordCreditPayment(request, reply) {
 
     if (e.code === "BAD_CREDIT_ID") {
       return reply.status(400).send({ error: "Invalid credit id" });
+    }
+
+    if (e.code === "BAD_PAYMENT_METHOD") {
+      return reply.status(400).send({
+        error: e.message || "Payment method is required",
+        debug: e.debug,
+      });
     }
 
     if (e.code === "BAD_AMOUNT") {

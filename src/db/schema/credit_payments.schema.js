@@ -16,6 +16,7 @@ const creditPayments = pgTable("credit_payments", {
   locationId: integer("location_id").notNull(),
   creditId: integer("credit_id").notNull(),
   saleId: integer("sale_id").notNull(),
+  installmentId: integer("installment_id"),
 
   amount: integer("amount").notNull(),
   method: varchar("method", { length: 20 }).notNull(), // CASH / MOMO / CARD / BANK / OTHER
