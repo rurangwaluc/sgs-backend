@@ -486,6 +486,69 @@ function buildMovementsQuery({
       LEFT JOIN customers c
         ON c.id = ol.customer_id
       WHERE UPPER(COALESCE(ol.status::text, 'OPEN')) <> 'VOID'
+
+      UNION ALL
+
+      /* BUSINESS LOAN RECEIVED / REPAYMENT / VOID -> CASH LEDGER */
+      SELECT
+        cl.id::bigint as id,
+        CASE
+          WHEN UPPER(COALESCE(cl.type::text, '')) = 'BUSINESS_LOAN_RECEIVED'
+            THEN 'BUSINESS_LOAN_RECEIVED_IN'
+          WHEN UPPER(COALESCE(cl.type::text, '')) = 'BUSINESS_LOAN_REPAYMENT'
+            THEN 'BUSINESS_LOAN_REPAYMENT_OUT'
+          WHEN UPPER(COALESCE(cl.type::text, '')) = 'BUSINESS_LOAN_VOID'
+            THEN 'BUSINESS_LOAN_VOID_OUT'
+          ELSE UPPER(COALESCE(cl.type::text, 'BUSINESS_LOAN_MOVEMENT'))
+        END::text as "movementType",
+        UPPER(COALESCE(cl.direction::text, 'OUT'))::text as direction,
+
+        NULL::bigint as "saleId",
+        NULL::bigint as "billId",
+        NULL::bigint as "expenseId",
+        NULL::bigint as "refundId",
+        NULL::bigint as "depositId",
+        NULL::bigint as "ownerLoanId",
+        cl.business_loan_repayment_id::bigint as "repaymentId",
+
+        cl.location_id::bigint as "locationId",
+        l.name as "locationName",
+        l.code as "locationCode",
+
+        cl.cashier_id::bigint as "actorUserId",
+        u.name as "actorName",
+
+        cl.cashier_id::bigint as "cashierId",
+        u.name as "cashierName",
+
+        c.name::text as "customerName",
+        c.phone::text as "customerPhone",
+
+        NULL::text as "supplierName",
+        blr.lender_name::text as "payeeName",
+
+        COALESCE(cl.amount, 0)::bigint as amount,
+        UPPER(COALESCE(cl.method::text, 'OTHER'))::text as method,
+        COALESCE(blrp.reference, blr.reference)::text as reference,
+        cl.note::text as note,
+        NULL::bigint as "cashSessionId",
+        cl.created_at as "createdAt"
+      FROM cash_ledger cl
+      JOIN locations l
+        ON l.id = cl.location_id
+      LEFT JOIN users u
+        ON u.id = cl.cashier_id
+      LEFT JOIN business_loans_received blr
+        ON blr.id = cl.business_loan_received_id
+      LEFT JOIN business_loan_repayments blrp
+        ON blrp.id = cl.business_loan_repayment_id
+      LEFT JOIN customers c
+        ON c.id = blr.customer_id
+      WHERE UPPER(COALESCE(cl.type::text, '')) IN (
+        'BUSINESS_LOAN_RECEIVED',
+        'BUSINESS_LOAN_REPAYMENT',
+        'BUSINESS_LOAN_VOID'
+      )
     )
     ${selectClause}
     FROM owner_money_movements omm
