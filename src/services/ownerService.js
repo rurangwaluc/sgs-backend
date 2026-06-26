@@ -1,5 +1,5 @@
 const { db } = require("../config/db");
-const { and, desc, eq, ne } = require("drizzle-orm");
+const { and, desc, eq, ne, sql } = require("drizzle-orm");
 
 const { locations } = require("../db/schema/locations.schema");
 const { users } = require("../db/schema/users.schema");
@@ -173,41 +173,58 @@ async function ensureCanRemoveMainStatus(location) {
 }
 
 async function buildLocationCountsMap() {
-  const [userRows, salesRows, paymentRows, productRows] = await Promise.all([
-    db.select({ locationId: users.locationId }).from(users),
-    db.select({ locationId: sales.locationId }).from(sales),
-    db.select({ locationId: payments.locationId }).from(payments),
-    db.select({ locationId: products.locationId }).from(products),
-  ]);
+  const result = await db.execute(sql`
+    SELECT
+      location_id AS "locationId",
+      COALESCE(SUM(users_count), 0)::int AS "usersCount",
+      COALESCE(SUM(products_count), 0)::int AS "productsCount",
+      COALESCE(SUM(sales_count), 0)::int AS "salesCount",
+      COALESCE(SUM(payments_count), 0)::int AS "paymentsCount"
+    FROM (
+      SELECT location_id, COUNT(*)::int AS users_count, 0::int AS products_count, 0::int AS sales_count, 0::int AS payments_count
+      FROM users
+      WHERE location_id IS NOT NULL
+      GROUP BY location_id
 
+      UNION ALL
+
+      SELECT location_id, 0::int AS users_count, COUNT(*)::int AS products_count, 0::int AS sales_count, 0::int AS payments_count
+      FROM products
+      WHERE location_id IS NOT NULL
+      GROUP BY location_id
+
+      UNION ALL
+
+      SELECT location_id, 0::int AS users_count, 0::int AS products_count, COUNT(*)::int AS sales_count, 0::int AS payments_count
+      FROM sales
+      WHERE location_id IS NOT NULL
+      GROUP BY location_id
+
+      UNION ALL
+
+      SELECT location_id, 0::int AS users_count, 0::int AS products_count, 0::int AS sales_count, COUNT(*)::int AS payments_count
+      FROM payments
+      WHERE location_id IS NOT NULL
+      GROUP BY location_id
+    ) counts
+    GROUP BY location_id
+  `);
+
+  const rows = Array.isArray(result) ? result : result?.rows || [];
   const countsMap = new Map();
 
-  function ensureBucket(locationId) {
-    if (!countsMap.has(locationId)) {
-      countsMap.set(locationId, {
-        usersCount: 0,
-        productsCount: 0,
-        salesCount: 0,
-        paymentsCount: 0,
-      });
-    }
-    return countsMap.get(locationId);
-  }
+  for (const row of rows) {
+    const locationId = row?.locationId ?? row?.location_id;
+    if (locationId == null) continue;
 
-  for (const row of userRows) {
-    ensureBucket(row.locationId).usersCount += 1;
-  }
-
-  for (const row of salesRows) {
-    ensureBucket(row.locationId).salesCount += 1;
-  }
-
-  for (const row of paymentRows) {
-    ensureBucket(row.locationId).paymentsCount += 1;
-  }
-
-  for (const row of productRows) {
-    ensureBucket(row.locationId).productsCount += 1;
+    countsMap.set(locationId, {
+      usersCount: Number(row?.usersCount ?? row?.users_count ?? 0) || 0,
+      productsCount:
+        Number(row?.productsCount ?? row?.products_count ?? 0) || 0,
+      salesCount: Number(row?.salesCount ?? row?.sales_count ?? 0) || 0,
+      paymentsCount:
+        Number(row?.paymentsCount ?? row?.payments_count ?? 0) || 0,
+    });
   }
 
   return countsMap;

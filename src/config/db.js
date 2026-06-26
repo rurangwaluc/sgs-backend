@@ -23,7 +23,9 @@ const rawUrl = String(env.DATABASE_URL || "").trim();
 
 const pool = new Pool({
   connectionString: stripSslQueryParams(rawUrl),
-  max: 10,
+  max: Number(process.env.PG_POOL_MAX || 5),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
   ...(env.PG_SSL
     ? {
         ssl: {

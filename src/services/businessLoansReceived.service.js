@@ -521,12 +521,9 @@ async function repayBusinessLoan(input = {}, actor = {}) {
 
     await ensureEnoughBusinessMoneyByMethod(
       tx,
-
       currentLoan.locationId,
-
-      currentLoan.receiptMethod,
-
-      currentLoan.principalAmount,
+      method,
+      amount,
     );
 
     const repaymentReference = `BLRP-${normalizeBranchCode(
@@ -695,12 +692,9 @@ async function voidBusinessLoan(input = {}, actor = {}) {
 
     await ensureEnoughBusinessMoneyByMethod(
       tx,
-
       currentLoan.locationId,
-
-      method,
-
-      amount,
+      currentLoan.receiptMethod || "CASH",
+      currentLoan.principalAmount,
     );
 
     const updatedLoanRes = await tx.execute(sql`
