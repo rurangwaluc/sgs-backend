@@ -44,6 +44,17 @@ function optionalDateString() {
     );
 }
 
+function optionalLinkedId() {
+  return z.preprocess(
+    (value) => {
+      if (value === "" || value === undefined) return undefined;
+      if (value === null) return null;
+      return value;
+    },
+    z.union([z.coerce.number().int().positive(), z.null()]).optional(),
+  );
+}
+
 const billItemSchema = z.object({
   productId: z.coerce.number().int().positive().optional(),
   description: z.string().trim().min(1).max(240),
@@ -56,8 +67,8 @@ const supplierBillCreateSchema = z
     supplierId: z.coerce.number().int().positive(),
     locationId: z.coerce.number().int().positive().optional(),
 
-    purchaseOrderId: z.coerce.number().int().positive().optional(),
-    goodsReceiptId: z.coerce.number().int().positive().optional(),
+    purchaseOrderId: optionalLinkedId(),
+    goodsReceiptId: optionalLinkedId(),
 
     billNo: optionalTrimmedString(80),
     currency: optionalTrimmedString(8),
@@ -114,8 +125,8 @@ const supplierBillUpdateSchema = z
     supplierId: z.coerce.number().int().positive().optional(),
     locationId: z.coerce.number().int().positive().optional(),
 
-    purchaseOrderId: z.coerce.number().int().positive().optional(),
-    goodsReceiptId: z.coerce.number().int().positive().optional(),
+    purchaseOrderId: optionalLinkedId(),
+    goodsReceiptId: optionalLinkedId(),
 
     billNo: optionalTrimmedString(80),
     currency: optionalTrimmedString(8),

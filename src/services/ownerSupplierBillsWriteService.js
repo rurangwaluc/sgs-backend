@@ -20,6 +20,7 @@ const {
 } = require("../validators/supplierBills.schema");
 
 function toInt(v, dflt = null) {
+  if (v === null || v === undefined || v === "") return dflt;
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : dflt;
 }
@@ -209,6 +210,8 @@ async function getBillOrThrow(tx, billId) {
       id: supplierBills.id,
       locationId: supplierBills.locationId,
       supplierId: supplierBills.supplierId,
+      purchaseOrderId: supplierBills.purchaseOrderId,
+      goodsReceiptId: supplierBills.goodsReceiptId,
       billNo: supplierBills.billNo,
       currency: supplierBills.currency,
       totalAmount: supplierBills.totalAmount,
@@ -247,6 +250,9 @@ async function getOwnerSupplierBillById(tx, billId) {
       supplierId: supplierBills.supplierId,
       supplierName: suppliers.name,
       supplierDefaultCurrency: suppliers.defaultCurrency,
+
+      purchaseOrderId: supplierBills.purchaseOrderId,
+      goodsReceiptId: supplierBills.goodsReceiptId,
 
       createdByName: users.name,
 
@@ -395,6 +401,156 @@ async function generateNextSupplierBillPaymentReference(
   return `${methodCode}-PAY-${baseBillNo}-${padSeq(existingCount + 1, 3)}`;
 }
 
+function rowsOf(result) {
+  return result?.rows || result || [];
+}
+
+async function getPurchaseOrderOrThrow(
+  tx,
+  { purchaseOrderId, supplierId, locationId },
+) {
+  const poId = toInt(purchaseOrderId, null);
+  const sid = toInt(supplierId, null);
+  const lid = toInt(locationId, null);
+
+  if (!poId || poId <= 0) {
+    const err = new Error("Invalid purchase order.");
+    err.code = "BAD_PURCHASE_ORDER_ID";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const result = await tx.execute(sql`
+    SELECT
+      id,
+      supplier_id as "supplierId",
+      location_id as "locationId",
+      currency,
+      total_amount as "totalAmount",
+      po_no as "poNo",
+      status
+    FROM purchase_orders
+    WHERE id = ${poId}
+      AND location_id = ${lid}
+    LIMIT 1
+  `);
+
+  const row = rowsOf(result)[0] || null;
+  if (!row) {
+    const err = new Error("Purchase order not found for this branch.");
+    err.code = "PURCHASE_ORDER_NOT_FOUND";
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (sid && toInt(row.supplierId, null) !== sid) {
+    const err = new Error("Purchase order does not belong to this supplier.");
+    err.code = "PURCHASE_ORDER_SUPPLIER_MISMATCH";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  return row;
+}
+
+async function getGoodsReceiptOrThrow(
+  tx,
+  { goodsReceiptId, supplierId, locationId },
+) {
+  const grId = toInt(goodsReceiptId, null);
+  const sid = toInt(supplierId, null);
+  const lid = toInt(locationId, null);
+
+  if (!grId || grId <= 0) {
+    const err = new Error("Invalid goods receipt.");
+    err.code = "BAD_GOODS_RECEIPT_ID";
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const result = await tx.execute(sql`
+    SELECT
+      id,
+      purchase_order_id as "purchaseOrderId",
+      supplier_id as "supplierId",
+      location_id as "locationId",
+      receipt_no as "receiptNo",
+      total_amount as "totalAmount",
+      received_at as "receivedAt"
+    FROM goods_receipts
+    WHERE id = ${grId}
+      AND location_id = ${lid}
+    LIMIT 1
+  `);
+
+  const row = rowsOf(result)[0] || null;
+  if (!row) {
+    const err = new Error("Goods receipt not found for this branch.");
+    err.code = "GOODS_RECEIPT_NOT_FOUND";
+    err.statusCode = 404;
+    throw err;
+  }
+
+  if (sid && toInt(row.supplierId, null) !== sid) {
+    const err = new Error("Goods receipt does not belong to this supplier.");
+    err.code = "GOODS_RECEIPT_SUPPLIER_MISMATCH";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  return row;
+}
+
+async function validateProcurementLinks(
+  tx,
+  { supplierId, locationId, purchaseOrderId = null, goodsReceiptId = null },
+) {
+  const poId = toInt(purchaseOrderId, null);
+  const grId = toInt(goodsReceiptId, null);
+
+  let purchaseOrder = null;
+  let goodsReceipt = null;
+
+  if (poId) {
+    purchaseOrder = await getPurchaseOrderOrThrow(tx, {
+      purchaseOrderId: poId,
+      supplierId,
+      locationId,
+    });
+  }
+
+  if (grId) {
+    goodsReceipt = await getGoodsReceiptOrThrow(tx, {
+      goodsReceiptId: grId,
+      supplierId,
+      locationId,
+    });
+
+    if (!poId) {
+      const err = new Error(
+        "Choose the purchase order before choosing its goods receipt.",
+      );
+      err.code = "GOODS_RECEIPT_REQUIRES_PURCHASE_ORDER";
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (
+      toInt(goodsReceipt.purchaseOrderId, null) !==
+      toInt(purchaseOrder?.id, null)
+    ) {
+      const err = new Error(
+        "Goods receipt does not belong to the selected purchase order.",
+      );
+      err.code = "GOODS_RECEIPT_PURCHASE_ORDER_MISMATCH";
+      err.statusCode = 409;
+      throw err;
+    }
+  }
+
+  return { purchaseOrder, goodsReceipt };
+}
+
 async function createOwnerSupplierBill({
   ownerUserId,
   ownerLocationId,
@@ -431,6 +587,13 @@ async function createOwnerSupplierBill({
     const supplier = await getSupplierOrThrow(tx, supplierId);
     await getLocationOrThrow(tx, locationId);
 
+    const links = await validateProcurementLinks(tx, {
+      supplierId,
+      locationId,
+      purchaseOrderId: data.purchaseOrderId,
+      goodsReceiptId: data.goodsReceiptId,
+    });
+
     let totalAmount = 0;
     let lines = [];
 
@@ -458,7 +621,7 @@ async function createOwnerSupplierBill({
 
     const currency = normalizeCurrency(
       data.currency,
-      supplier?.defaultCurrency || "RWF",
+      links.purchaseOrder?.currency || supplier?.defaultCurrency || "RWF",
     );
 
     const issuedDateValue = toDateOrNull(data.issuedDate) || new Date();
@@ -474,6 +637,8 @@ async function createOwnerSupplierBill({
       .values({
         locationId,
         supplierId,
+        purchaseOrderId: toInt(data.purchaseOrderId, null),
+        goodsReceiptId: toInt(data.goodsReceiptId, null),
         billNo: finalBillNo,
         currency,
         totalAmount,
@@ -519,6 +684,8 @@ async function createOwnerSupplierBill({
       description: `Owner created supplier bill #${billId}`,
       meta: {
         supplierId,
+        purchaseOrderId: links.purchaseOrder?.id || null,
+        goodsReceiptId: links.goodsReceipt?.id || null,
         totalAmount,
         currency,
         status,
@@ -590,6 +757,36 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
 
       await getLocationOrThrow(tx, nextLocationId);
       patch.locationId = nextLocationId;
+    }
+
+    const nextSupplierId =
+      patch.supplierId !== undefined ? patch.supplierId : existing.supplierId;
+    const nextLocationId =
+      patch.locationId !== undefined ? patch.locationId : existing.locationId;
+
+    const nextPurchaseOrderId =
+      data.purchaseOrderId !== undefined
+        ? toInt(data.purchaseOrderId, null)
+        : toInt(existing.purchaseOrderId, null);
+
+    const nextGoodsReceiptId =
+      data.goodsReceiptId !== undefined
+        ? toInt(data.goodsReceiptId, null)
+        : toInt(existing.goodsReceiptId, null);
+
+    await validateProcurementLinks(tx, {
+      supplierId: nextSupplierId,
+      locationId: nextLocationId,
+      purchaseOrderId: nextPurchaseOrderId,
+      goodsReceiptId: nextGoodsReceiptId,
+    });
+
+    if (data.purchaseOrderId !== undefined) {
+      patch.purchaseOrderId = nextPurchaseOrderId;
+    }
+
+    if (data.goodsReceiptId !== undefined) {
+      patch.goodsReceiptId = nextGoodsReceiptId;
     }
 
     if (data.billNo !== undefined) {
@@ -685,6 +882,12 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
         ...(patch.locationId !== undefined
           ? { locationId: patch.locationId }
           : {}),
+        ...(patch.purchaseOrderId !== undefined
+          ? { purchaseOrderId: patch.purchaseOrderId }
+          : {}),
+        ...(patch.goodsReceiptId !== undefined
+          ? { goodsReceiptId: patch.goodsReceiptId }
+          : {}),
         ...(patch.billNo !== undefined ? { billNo: patch.billNo } : {}),
         ...(patch.currency !== undefined ? { currency: patch.currency } : {}),
         ...(patch.totalAmount !== undefined
@@ -728,6 +931,14 @@ async function updateOwnerSupplierBill({ ownerUserId, billId, payload }) {
       description: `Owner updated supplier bill #${id}`,
       meta: {
         supplierId: patch.supplierId ?? existing.supplierId,
+        purchaseOrderId:
+          patch.purchaseOrderId !== undefined
+            ? patch.purchaseOrderId
+            : existing.purchaseOrderId || null,
+        goodsReceiptId:
+          patch.goodsReceiptId !== undefined
+            ? patch.goodsReceiptId
+            : existing.goodsReceiptId || null,
         totalAmount: patch.totalAmount ?? existing.totalAmount,
         status: patch.status,
         billNo: patch.billNo ?? existing.billNo,
