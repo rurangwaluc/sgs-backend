@@ -55,7 +55,7 @@ const createProductSchema = z.object({
   barcode: z.string().trim().max(120).optional(),
   supplierCode: z.string().trim().max(120).optional(),
 
-  reorderLevel: z.coerce.number().int().min(0).optional().default(0),
+  reorderLevel: z.coerce.number().min(0).optional().default(0),
 
   gender: z
     .string()
@@ -65,7 +65,7 @@ const createProductSchema = z.object({
 
   season: z.string().trim().max(40).optional(),
 
-  openingQty: z.coerce.number().int().min(0).optional().default(0),
+  openingQty: z.coerce.number().min(0).optional().default(0),
 });
 
 const updateProductSchema = z.object({
@@ -104,7 +104,7 @@ const updateProductSchema = z.object({
   barcode: z.string().trim().max(120).optional(),
   supplierCode: z.string().trim().max(120).optional(),
 
-  reorderLevel: z.coerce.number().int().min(0).optional(),
+  reorderLevel: z.coerce.number().min(0).optional(),
 
   gender: z
     .string()

@@ -166,7 +166,7 @@ async function getAdminDashboard({ locationId }) {
     await db.execute(sql`
       SELECT
         product_id AS "productId",
-        COALESCE(qty_on_hand, 0)::int AS "qtyOnHand"
+        COALESCE(qty_on_hand, 0)::numeric AS "qtyOnHand"
       FROM inventory_balances
       WHERE location_id = ${parsedLocationId}
         AND COALESCE(qty_on_hand, 0) <= ${lowStockThreshold}
@@ -183,7 +183,7 @@ async function getAdminDashboard({ locationId }) {
     await db.execute(sql`
         SELECT
           ${parsedLocationId}::int AS "locationId",
-          COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::bigint AS "totalQtyOnHand",
+          COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::numeric AS "totalQtyOnHand",
           COALESCE(
             SUM(COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)),
             0

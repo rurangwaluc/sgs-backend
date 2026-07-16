@@ -286,7 +286,7 @@ async function listOwnerProducts({
       p.created_at AS "createdAt",
       p.updated_at AS "updatedAt",
 
-      COALESCE(b.qty_on_hand, 0)::int AS "qtyOnHand"
+      COALESCE(b.qty_on_hand, 0)::numeric AS "qtyOnHand"
     FROM products p
     INNER JOIN locations l
       ON l.id = p.location_id
@@ -355,7 +355,7 @@ async function getOwnerProductBranchesByProductId({
       p.created_at AS "createdAt",
       p.updated_at AS "updatedAt",
 
-      COALESCE(b.qty_on_hand, 0)::int AS "qtyOnHand"
+      COALESCE(b.qty_on_hand, 0)::numeric AS "qtyOnHand"
     FROM products p
     INNER JOIN locations l
       ON l.id = p.location_id
@@ -426,7 +426,7 @@ async function createOwnerProduct({ actorUser, data }) {
   await ensureAssignableLocation(targetLocationId);
 
   return db.transaction(async (tx) => {
-    const openingQty = normalizePositiveInt(data.openingQty, 0);
+    const openingQty = Math.max(0, Math.round(Number(data.openingQty || 0) * 1000) / 1000);
     const category = normalizeCategory(data.category);
     const { legacyUnit, stockUnit, salesUnit, purchaseUnit } = buildUnits(data);
 

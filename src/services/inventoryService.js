@@ -13,6 +13,18 @@ const {
   normalizePositiveInt,
 } = require("../utils/productCatalog");
 
+function normalizeQuantity(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.round(n * 1000) / 1000);
+}
+
+function normalizeSignedQuantity(value, fallback = 0) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.round(n * 1000) / 1000;
+}
+
 function buildProductDisplayName(row = {}) {
   return [
     cleanText(row.name, 160),
@@ -158,7 +170,7 @@ function buildProductUpdatePayload(data = {}) {
   }
 
   if (data.reorderLevel !== undefined) {
-    updates.reorderLevel = normalizePositiveInt(data.reorderLevel, 0);
+    updates.reorderLevel = normalizeQuantity(data.reorderLevel, 0);
   }
 
   if (data.sellingPrice !== undefined) {
@@ -194,7 +206,7 @@ function buildProductUpdatePayload(data = {}) {
 
 async function createProduct({ locationId, userId, data }) {
   return db.transaction(async (tx) => {
-    const openingQty = normalizePositiveInt(data.openingQty, 0);
+    const openingQty = normalizeQuantity(data.openingQty, 0);
 
     const name = cleanText(data.name, 160);
     const sku = cleanText(data.sku, 80);
@@ -385,7 +397,7 @@ async function listProducts({
       p.notes,
       p.created_at as "createdAt",
       p.updated_at as "updatedAt",
-      COALESCE(ib.qty_on_hand, 0)::bigint as "qtyOnHand"
+      COALESCE(ib.qty_on_hand, 0)::numeric as "qtyOnHand"
     FROM products p
     LEFT JOIN inventory_balances ib
       ON ib.product_id = p.id

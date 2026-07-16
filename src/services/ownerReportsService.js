@@ -526,7 +526,7 @@ async function getOwnerTrialBalanceReport(input = {}) {
   `);
 
   const inventoryAssetRes = await db.execute(sql`
-    SELECT COALESCE(SUM(COALESCE(ib.qty_on_hand, 0) * COALESCE(p.cost_price, 0)), 0)::bigint AS balance
+    SELECT ROUND(COALESCE(SUM(COALESCE(ib.qty_on_hand, 0) * COALESCE(p.cost_price, 0)), 0))::bigint AS balance
     FROM products p
     LEFT JOIN inventory_balances ib
       ON ib.product_id = p.id AND ib.location_id = p.location_id

@@ -81,9 +81,9 @@ async function inventorySnapshot({ locationId, limit = 50 }) {
       p.unit,
       p.cost_price    AS "costPrice",
       p.selling_price AS "sellingPrice",
-      COALESCE(b.qty_on_hand, 0)::int AS "qtyOnHand",
-      (COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0))::bigint AS "stockValueCost",
-      (COALESCE(b.qty_on_hand, 0) * COALESCE(p.selling_price, 0))::bigint AS "stockValueSell"
+      COALESCE(b.qty_on_hand, 0)::numeric AS "qtyOnHand",
+      ROUND((COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)))::bigint AS "stockValueCost",
+      ROUND((COALESCE(b.qty_on_hand, 0) * COALESCE(p.selling_price, 0)))::bigint AS "stockValueSell"
     FROM products p
     LEFT JOIN inventory_balances b
       ON b.product_id = p.id AND b.location_id = p.location_id
@@ -106,7 +106,7 @@ async function sellerHoldingsSnapshot({ locationId, limit = 100 }) {
       sh.product_id AS "productId",
       p.name AS "productName",
       p.sku AS "sku",
-      COALESCE(sh.qty_on_hand, 0)::int AS "qtyOnHand"
+      COALESCE(sh.qty_on_hand, 0)::numeric AS "qtyOnHand"
     FROM seller_holdings sh
     JOIN products p
       ON p.id = sh.product_id AND p.location_id = sh.location_id

@@ -2,6 +2,7 @@ const {
   pgTable,
   serial,
   integer,
+  numeric,
   timestamp,
   uniqueIndex,
   bigint,
@@ -21,7 +22,7 @@ const inventoryBalances = pgTable(
     // ✅ FIX: bigint
     productId: bigint("product_id", { mode: "number" }).notNull(),
 
-    qtyOnHand: integer("qty_on_hand").notNull().default(0),
+    qtyOnHand: numeric("qty_on_hand", { precision: 14, scale: 3, mode: "number" }).notNull().default(0),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (t) => ({

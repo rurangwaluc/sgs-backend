@@ -19,7 +19,7 @@ async function ownerSummary({ locationId }) {
   // Inventory totals
   const inventoryRes = await db.execute(sql`
     SELECT
-      COALESCE(SUM(qty_on_hand), 0)::int AS totalQty
+      COALESCE(SUM(qty_on_hand), 0)::numeric AS totalQty
     FROM inventory_balances
     WHERE location_id = ${locationId}
   `);

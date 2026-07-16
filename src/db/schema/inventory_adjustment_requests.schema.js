@@ -1,4 +1,5 @@
-const { pgTable, serial, integer, varchar, timestamp, bigint, text } = require("drizzle-orm/pg-core");
+const { pgTable, serial, integer,
+  numeric, varchar, timestamp, bigint, text } = require("drizzle-orm/pg-core");
 
 const inventoryAdjustmentRequests = pgTable("inventory_adjustment_requests", {
   id: serial("id").primaryKey(),
@@ -8,7 +9,7 @@ const inventoryAdjustmentRequests = pgTable("inventory_adjustment_requests", {
   productId: bigint("product_id", { mode: "number" }).notNull(),
 
   // ✅ match service (qtyChange)
-  qtyChange: integer("qty_change").notNull(),
+  qtyChange: numeric("qty_change", { precision: 14, scale: 3, mode: "number" }).notNull(),
 
   // ✅ match service
   reason: text("reason").notNull(),

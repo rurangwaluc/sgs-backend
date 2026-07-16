@@ -164,7 +164,7 @@ async function getManagerDashboard({ locationId }) {
     await db.execute(sql`
       select
         product_id as "productId",
-        coalesce(qty_on_hand,0)::int as "qtyOnHand"
+        coalesce(qty_on_hand,0)::numeric as "qtyOnHand"
       from inventory_balances
       where location_id = ${locationId}
         and coalesce(qty_on_hand,0) <= ${lowStockThreshold}

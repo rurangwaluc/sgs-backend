@@ -70,7 +70,7 @@ async function getOwnerInventorySummary({ includeInactive = false } = {}) {
     SELECT
       COUNT(DISTINCT l.id)::int AS "branchesCount",
       COUNT(DISTINCT p.id)::int AS "productsCount",
-      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::bigint AS "totalQtyOnHand",
+      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::numeric AS "totalQtyOnHand",
       COALESCE(
         SUM(COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)),
         0
@@ -99,7 +99,7 @@ async function getOwnerInventorySummary({ includeInactive = false } = {}) {
       l.code AS "locationCode",
       l.status AS "locationStatus",
       COUNT(DISTINCT p.id)::int AS "productsCount",
-      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::bigint AS "totalQtyOnHand",
+      COALESCE(SUM(COALESCE(b.qty_on_hand, 0)), 0)::numeric AS "totalQtyOnHand",
       COALESCE(
         SUM(COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)),
         0
@@ -235,8 +235,8 @@ async function listOwnerInventory({
       p.cost_price AS "purchasePrice",
       p.max_discount_percent AS "maxDiscountPercent",
       p.is_active AS "isActive",
-      COALESCE(b.qty_on_hand, 0)::int AS "qtyOnHand",
-      (COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0))::bigint AS "inventoryValue",
+      COALESCE(b.qty_on_hand, 0)::numeric AS "qtyOnHand",
+      ROUND((COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)))::bigint AS "inventoryValue",
       b.updated_at AS "updatedAt"
     FROM products p
     INNER JOIN locations l
@@ -292,12 +292,12 @@ async function getOwnerProductInventoryByProductId({
       l.name AS "locationName",
       l.code AS "locationCode",
       l.status AS "locationStatus",
-      COALESCE(b.qty_on_hand, 0)::int AS "qtyOnHand",
+      COALESCE(b.qty_on_hand, 0)::numeric AS "qtyOnHand",
       p.selling_price AS "sellingPrice",
       p.cost_price AS "purchasePrice",
       p.max_discount_percent AS "maxDiscountPercent",
       p.is_active AS "isActive",
-      (COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0))::bigint AS "inventoryValue",
+      ROUND((COALESCE(b.qty_on_hand, 0) * COALESCE(p.cost_price, 0)))::bigint AS "inventoryValue",
       b.updated_at AS "updatedAt"
     FROM products p
     INNER JOIN locations l
@@ -364,7 +364,7 @@ async function adjustOwnerInventory({
   }
 
   if (!Number.isInteger(parsedQtyChange) || parsedQtyChange === 0) {
-    const err = new Error("qtyChange must be a non-zero integer");
+    const err = new Error("qtyChange must be a non-zero number");
     err.code = "BAD_QTY_CHANGE";
     throw err;
   }

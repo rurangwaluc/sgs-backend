@@ -65,7 +65,7 @@ async function createRequest({
 }) {
   const parsedLocationId = toInt(locationId);
   const parsedProductId = toInt(productId);
-  const parsedQtyChange = toInt(qtyChange);
+  const parsedQtyChange = Math.round(Number(qtyChange) * 1000) / 1000;
   const parsedRequestedByUserId = toInt(requestedByUserId);
   const normalizedReason = cleanReason(reason);
 
@@ -75,8 +75,8 @@ async function createRequest({
     throw err;
   }
 
-  if (!parsedQtyChange) {
-    const err = new Error("qtyChange must be a non-zero integer");
+  if (!Number.isFinite(parsedQtyChange) || parsedQtyChange === 0) {
+    const err = new Error("qtyChange must be a non-zero number");
     err.code = "BAD_QTY_CHANGE";
     throw err;
   }
