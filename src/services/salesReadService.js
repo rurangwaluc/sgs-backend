@@ -202,7 +202,7 @@ async function getSaleById({ locationId, saleId }) {
     productId: toInt(it.productId, null),
     productName: it.productName ?? null,
     sku: it.sku ?? null,
-    qty: toInt(it.qty, 0),
+    qty: Number(it.qty || 0),
     baseUnitPrice: toInt(it.baseUnitPrice, 0),
     extraChargePerUnit: toInt(it.extraChargePerUnit, 0),
     unitPrice: toInt(it.unitPrice, 0),
@@ -350,7 +350,7 @@ async function listSales({ locationId, filters }) {
       FROM (
         SELECT
           COALESCE(pr.name, CONCAT('Product #', si.product_id::text)) as "productName",
-          si.qty::int as "qty",
+          si.qty::numeric as "qty",
           pr.sku as "sku",
           si.base_unit_price::bigint as "baseUnitPrice",
           si.extra_charge_per_unit::bigint as "extraChargePerUnit",
@@ -426,7 +426,7 @@ async function listSales({ locationId, filters }) {
     const itemsPreview = Array.isArray(r.itemsPreview)
       ? r.itemsPreview.map((item) => ({
           productName: item?.productName ?? null,
-          qty: toInt(item?.qty, 0),
+          qty: Number(item?.qty || 0),
           sku: item?.sku ?? null,
           baseUnitPrice: toInt(item?.baseUnitPrice, 0),
           extraChargePerUnit: toInt(item?.extraChargePerUnit, 0),
@@ -466,7 +466,7 @@ async function listSales({ locationId, filters }) {
       credit,
       itemsPreview,
       items: itemsPreview,
-      itemsCount: itemsPreview.reduce((sum, item) => sum + toInt(item?.qty, 0), 0),
+      itemsCount: itemsPreview.reduce((sum, item) => sum + Number(item?.qty || 0), 0),
       itemsSummary: itemsPreview
         .map((item) => `${item?.productName || "Item"} ×${toInt(item?.qty, 0) || 1}`)
         .join(", "),

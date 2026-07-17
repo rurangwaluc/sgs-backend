@@ -60,7 +60,7 @@ function safeText(v, max = 300) {
 }
 
 function computeLine({ qty, unitPrice, discountPercent, discountAmount }) {
-  const q = toInt(qty);
+  const q = toQty(qty);
   const up = toInt(unitPrice);
   const base = up * q;
 
@@ -202,7 +202,7 @@ async function createSale({
         throw err;
       }
 
-      const qty = toInt(it?.qty);
+      const qty = toQty(it?.qty);
       if (qty <= 0) {
         const err = new Error("Invalid qty");
         err.code = "BAD_QTY";
@@ -609,7 +609,7 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
 
     for (const it of items) {
       const pid = Number(it.productId);
-      const qty = toInt(it.qty);
+      const qty = toQty(it.qty);
 
       await tx
         .insert(inventoryBalances)
@@ -627,7 +627,7 @@ async function fulfillSale({ locationId, storeKeeperId, saleId, note }) {
         );
 
       const inv = invRows[0];
-      const currentQty = toInt(inv?.qtyOnHand);
+      const currentQty = Number(inv?.qtyOnHand || 0);
       const newQty = currentQty - qty;
 
       if (newQty < 0) {
@@ -836,7 +836,7 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
 
       for (const it of items) {
         const pid = Number(it.productId);
-        const qty = toInt(it.qty);
+        const qty = toQty(it.qty);
 
         await tx
           .insert(inventoryBalances)
@@ -854,7 +854,7 @@ async function cancelSale({ locationId, userId, saleId, reason }) {
           );
 
         const inv = invRows[0];
-        const restored = toInt(inv?.qtyOnHand) + qty;
+        const restored = Number(inv?.qtyOnHand || 0) + qty;
 
         await tx
           .update(inventoryBalances)

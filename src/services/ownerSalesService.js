@@ -272,7 +272,7 @@ async function listOwnerSales(filters = {}) {
       FROM (
         SELECT
           COALESCE(pr.name, CONCAT('Product #', si.product_id::text)) as "productName",
-          si.qty::int as "qty",
+          si.qty::numeric as "qty",
           pr.sku as "sku"
         FROM sale_items si
         LEFT JOIN products pr

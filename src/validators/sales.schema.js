@@ -3,7 +3,7 @@ const { z } = require("zod");
 const saleItemSchema = z
   .object({
     productId: z.number().int().positive(),
-    qty: z.number().int().positive(),
+    qty: z.coerce.number().positive(),
     unitPrice: z.coerce.number().int().min(0).optional(),
     extraChargePerUnit: z.coerce.number().int().min(0).optional(),
     priceAdjustmentReason: z.string().trim().min(3).max(300).optional(),

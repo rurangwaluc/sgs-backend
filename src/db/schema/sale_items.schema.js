@@ -3,6 +3,7 @@ const {
   pgTable,
   serial,
   integer,
+  numeric,
   bigint,
   varchar,
   text,
@@ -16,7 +17,7 @@ const saleItems = pgTable("sale_items", {
 
   productId: bigint("product_id", { mode: "number" }).notNull(),
 
-  qty: integer("qty").notNull(),
+  qty: numeric("qty", { precision: 14, scale: 3, mode: "number" }).notNull(),
 
   /**
    * Official system price at the moment seller created the sale.
