@@ -44,6 +44,12 @@ function toInt(n) {
   return Math.round(x);
 }
 
+function toQty(n) {
+  const x = Number(n || 0);
+  if (!Number.isFinite(x)) return 0;
+  return Math.round(x * 1000) / 1000;
+}
+
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
