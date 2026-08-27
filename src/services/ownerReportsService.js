@@ -744,11 +744,36 @@ async function getOwnerIncomeStatementReport(input = {}) {
       AND UPPER(COALESCE(e.status::text, 'POSTED')) = 'POSTED'
   `);
 
+  const operatingExpensesBreakdownRes = await db.execute(sql`
+    SELECT
+      COALESCE(e.category, 'GENERAL')::text AS category,
+      COUNT(*)::int AS count,
+      COALESCE(SUM(e.amount), 0)::bigint AS total
+    FROM expenses e
+    WHERE 1 = 1
+      ${locationIdInt ? sql`AND e.location_id = ${locationIdInt}` : sql``}
+      ${fromTs ? sql`AND e.expense_date >= ${fromTs}` : sql``}
+      ${toExclusiveTs ? sql`AND e.expense_date < ${toExclusiveTs}` : sql``}
+      AND UPPER(COALESCE(e.status::text, 'POSTED')) = 'POSTED'
+    GROUP BY COALESCE(e.category, 'GENERAL')
+    HAVING COALESCE(SUM(e.amount), 0) <> 0
+    ORDER BY total DESC
+    LIMIT 5
+  `);
+
   const revenue = toMoneyInt(firstRow(revenueRes).total);
   const refunds = toMoneyInt(firstRow(refundsRes).total);
   const extraChargeRevenue = toMoneyInt(firstRow(extraChargeRevenueRes).total);
   const cogs = toMoneyInt(firstRow(cogsRes).total);
   const operatingExpenses = toMoneyInt(firstRow(operatingExpensesRes).total);
+  const expenseBreakdownRows = Array.isArray(operatingExpensesBreakdownRes.rows)
+    ? operatingExpensesBreakdownRes.rows
+    : [];
+  const expenseBreakdown = expenseBreakdownRows.map((row) => ({
+    category: String(row.category || 'GENERAL'),
+    count: Number(row.count || 0),
+    total: toMoneyInt(row.total),
+  }));
 
   const netRevenue = revenue - refunds;
   const grossProfit = netRevenue - cogs;
@@ -771,6 +796,7 @@ async function getOwnerIncomeStatementReport(input = {}) {
     },
     operatingExpenses: {
       total: operatingExpenses,
+      breakdown: expenseBreakdown,
     },
     bottomLine: {
       operatingProfit,
