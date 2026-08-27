@@ -43,6 +43,16 @@ const saleItems = pgTable("sale_items", {
 
   lineTotal: bigint("line_total", { mode: "number" }).notNull(),
 
+  unitCostAtSale: bigint("unit_cost_at_sale", { mode: "number" })
+    .notNull()
+    .default(0),
+
+  lineCostTotal: bigint("line_cost_total", { mode: "number" })
+    .notNull()
+    .default(0),
+
+  lineProfit: bigint("line_profit", { mode: "number" }).notNull().default(0),
+
   /**
    * Optional seller explanation for why price was increased.
    * Example: "customer accepted premium walk-in price"

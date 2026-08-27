@@ -241,6 +241,7 @@ async function createSale({
       }
 
       const finalUnitPrice = baseUnitPrice + extraChargePerUnit;
+      const unitCostAtSale = Math.max(0, toInt(prod.costPrice ?? 0));
 
       const itemMax = clamp(toPct(prod.maxDiscountPercent ?? 0), 0, 100);
       strictMaxDisc = Math.min(strictMaxDisc, itemMax);
@@ -279,6 +280,9 @@ async function createSale({
         throw err;
       }
 
+      const lineCostTotal = Math.round(line.qty * unitCostAtSale);
+      const lineProfit = line.lineTotal - lineCostTotal;
+
       subtotal += line.lineTotal;
 
       lines.push({
@@ -289,6 +293,9 @@ async function createSale({
         extraChargePerUnit,
         unitPrice: line.unitPrice,
         lineTotal: line.lineTotal,
+        unitCostAtSale,
+        lineCostTotal,
+        lineProfit,
 
         priceAdjustmentReason: priceAdjustmentReason || null,
         priceAdjustmentType: extraChargePerUnit > 0 ? "SELLER_UPLIFT" : "NONE",
@@ -425,6 +432,9 @@ async function createSale({
         extraChargePerUnit: ln.extraChargePerUnit,
         unitPrice: ln.unitPrice,
         lineTotal: ln.lineTotal,
+        unitCostAtSale: ln.unitCostAtSale,
+        lineCostTotal: ln.lineCostTotal,
+        lineProfit: ln.lineProfit,
 
         priceAdjustmentReason: ln.priceAdjustmentReason,
         priceAdjustmentType: ln.priceAdjustmentType,

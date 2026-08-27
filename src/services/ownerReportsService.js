@@ -562,8 +562,8 @@ async function getOwnerTrialBalanceReport(input = {}) {
       ${asOfTs ? sql`AND r.created_at < ${asOfTs}` : sql``}
   `);
 
-  const estimatedCogsRes = await db.execute(sql`
-    SELECT COALESCE(SUM(si.qty * COALESCE(p.cost_price, 0)), 0)::bigint AS balance
+  const costOfProductsSoldRes = await db.execute(sql`
+    SELECT COALESCE(SUM(COALESCE(si.line_cost_total, 0)), 0)::bigint AS balance
     FROM sale_items si
     JOIN sales s ON s.id = si.sale_id
     LEFT JOIN products p ON p.id = si.product_id AND p.location_id = s.location_id
@@ -634,10 +634,10 @@ async function getOwnerTrialBalanceReport(input = {}) {
     },
     {
       code: "5000",
-      name: "Cost of goods sold (estimated)",
+      name: "Cost of products sold",
       type: "EXPENSE",
       normalSide: "DEBIT",
-      amount: toMoneyInt(firstRow(estimatedCogsRes).balance),
+      amount: toMoneyInt(firstRow(costOfProductsSoldRes).balance),
     },
     {
       code: "6100",
@@ -689,7 +689,7 @@ async function getOwnerIncomeStatementReport(input = {}) {
 
   const warnings = [];
   warnings.push(
-    "Cost of goods sold is estimated from current products.cost_price because historical item cost snapshots are not stored on sale_items.",
+    "New sales use saved product cost at sale time. Older sales may still use the current product cost as an estimate.",
   );
 
   const revenueRes = await db.execute(sql`
@@ -723,7 +723,7 @@ async function getOwnerIncomeStatementReport(input = {}) {
   `);
 
   const cogsRes = await db.execute(sql`
-    SELECT COALESCE(SUM(si.qty * COALESCE(p.cost_price, 0)), 0)::bigint AS total
+    SELECT COALESCE(SUM(COALESCE(si.line_cost_total, 0)), 0)::bigint AS total
     FROM sale_items si
     JOIN sales s ON s.id = si.sale_id
     LEFT JOIN products p ON p.id = si.product_id AND p.location_id = s.location_id
@@ -763,7 +763,7 @@ async function getOwnerIncomeStatementReport(input = {}) {
       extraChargeRevenue,
     },
     costOfSales: {
-      estimatedCogs: cogs,
+      costOfProductsSold: cogs,
     },
     profitability: {
       grossProfit,
@@ -784,7 +784,7 @@ async function getOwnerProfitTableReport(input = {}) {
 
   const warnings = [];
   warnings.push(
-    "Profit rows use current products.cost_price for COGS estimation because historical item cost snapshots are not stored per sale line.",
+    "New sales use saved product cost at sale time. Older sales may still use the current product cost as an estimate.",
   );
 
   const result = await db.execute(sql`
@@ -822,7 +822,7 @@ async function getOwnerProfitTableReport(input = {}) {
       ), 0)::bigint AS "extraChargeRevenue",
 
       COALESCE((
-        SELECT SUM(si.qty * COALESCE(p.cost_price, 0))::bigint
+        SELECT SUM(COALESCE(si.line_cost_total, 0))::bigint
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id
         LEFT JOIN products p ON p.id = si.product_id AND p.location_id = s.location_id
@@ -830,7 +830,7 @@ async function getOwnerProfitTableReport(input = {}) {
           ${fromTs ? sql`AND s.created_at >= ${fromTs}` : sql``}
           ${toExclusiveTs ? sql`AND s.created_at < ${toExclusiveTs}` : sql``}
           AND UPPER(COALESCE(s.status::text, 'DRAFT')) IN ('FULFILLED', 'COMPLETED')
-      ), 0)::bigint AS "estimatedCogs",
+      ), 0)::bigint AS "costOfProductsSold",
 
       COALESCE((
         SELECT SUM(e.amount)::bigint
@@ -850,8 +850,8 @@ async function getOwnerProfitTableReport(input = {}) {
     const grossSales = toMoneyInt(row.grossSales);
     const refunds = toMoneyInt(row.refunds);
     const netRevenue = grossSales - refunds;
-    const estimatedCogs = toMoneyInt(row.estimatedCogs);
-    const grossProfit = netRevenue - estimatedCogs;
+    const costOfProductsSold = toMoneyInt(row.costOfProductsSold);
+    const grossProfit = netRevenue - costOfProductsSold;
     const operatingExpenses = toMoneyInt(row.operatingExpenses);
     const operatingProfit = grossProfit - operatingExpenses;
 
@@ -864,7 +864,7 @@ async function getOwnerProfitTableReport(input = {}) {
       refunds,
       netRevenue,
       extraChargeRevenue: toMoneyInt(row.extraChargeRevenue),
-      estimatedCogs,
+      costOfProductsSold,
       grossProfit,
       grossMarginPct: toPct(grossProfit, netRevenue),
       operatingExpenses,
@@ -879,7 +879,7 @@ async function getOwnerProfitTableReport(input = {}) {
       acc.refunds += row.refunds;
       acc.netRevenue += row.netRevenue;
       acc.extraChargeRevenue += row.extraChargeRevenue;
-      acc.estimatedCogs += row.estimatedCogs;
+      acc.costOfProductsSold += row.costOfProductsSold;
       acc.grossProfit += row.grossProfit;
       acc.operatingExpenses += row.operatingExpenses;
       acc.operatingProfit += row.operatingProfit;
@@ -890,7 +890,7 @@ async function getOwnerProfitTableReport(input = {}) {
       refunds: 0,
       netRevenue: 0,
       extraChargeRevenue: 0,
-      estimatedCogs: 0,
+      costOfProductsSold: 0,
       grossProfit: 0,
       operatingExpenses: 0,
       operatingProfit: 0,
