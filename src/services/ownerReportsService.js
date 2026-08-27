@@ -804,6 +804,64 @@ async function getOwnerIncomeStatementReport(input = {}) {
   }));
 
 
+  const productWatchRes = await db.execute(sql`
+    SELECT
+      p.id::int AS "productId",
+      p.name AS "productName",
+      COALESCE(p.sku, '')::text AS sku,
+      COALESCE(p.unit, '')::text AS unit,
+      COALESCE(SUM(si.qty), 0)::numeric AS "qtySold",
+      COALESCE(SUM(si.line_total), 0)::bigint AS "soldWorth",
+      COALESCE(SUM(COALESCE(si.line_cost_total, 0)), 0)::bigint AS "productCost",
+      COALESCE(SUM(COALESCE(si.line_profit, 0)), 0)::bigint AS "moneyLeft"
+    FROM sale_items si
+    JOIN sales s ON s.id = si.sale_id
+    JOIN products p ON p.id = si.product_id AND p.location_id = s.location_id
+    WHERE 1 = 1
+      ${locationIdInt ? sql`AND s.location_id = ${locationIdInt}` : sql``}
+      ${fromTs ? sql`AND s.created_at >= ${fromTs}` : sql``}
+      ${toExclusiveTs ? sql`AND s.created_at < ${toExclusiveTs}` : sql``}
+      AND UPPER(COALESCE(s.status::text, 'DRAFT')) IN ('FULFILLED', 'COMPLETED')
+    GROUP BY p.id, p.name, p.sku, p.unit
+    HAVING COALESCE(SUM(si.line_total), 0) > 0
+    ORDER BY "soldWorth" DESC
+    LIMIT 100
+  `);
+
+  const productWatchRows = Array.isArray(productWatchRes.rows)
+    ? productWatchRes.rows
+    : [];
+  const productRows = productWatchRows.map((row) => {
+    const soldWorth = toMoneyInt(row.soldWorth);
+    const moneyLeft = toMoneyInt(row.moneyLeft);
+    return {
+      productId: Number(row.productId || 0),
+      productName: String(row.productName || 'Unknown product'),
+      sku: String(row.sku || ''),
+      unit: String(row.unit || ''),
+      qtySold: Number(row.qtySold || 0),
+      soldWorth,
+      productCost: toMoneyInt(row.productCost),
+      moneyLeft,
+      moneyLeftPct: toPct(moneyLeft, soldWorth),
+    };
+  });
+
+  const bestMoneyMakers = [...productRows]
+    .filter((row) => row.moneyLeft > 0)
+    .sort((a, b) => b.moneyLeft - a.moneyLeft)
+    .slice(0, 5);
+
+  const weakProfitProducts = [...productRows]
+    .filter((row) => row.soldWorth > 0 && row.moneyLeft >= 0 && row.moneyLeftPct <= 10)
+    .sort((a, b) => a.moneyLeftPct - b.moneyLeftPct || b.soldWorth - a.soldWorth)
+    .slice(0, 5);
+
+  const missingCostProducts = [...productRows]
+    .filter((row) => row.soldWorth > 0 && row.productCost <= 0)
+    .sort((a, b) => b.soldWorth - a.soldWorth)
+    .slice(0, 5);
+
   const netRevenue = revenue - refunds;
   const grossProfit = netRevenue - cogs;
   const operatingProfit = grossProfit - operatingExpenses;
@@ -831,6 +889,11 @@ async function getOwnerIncomeStatementReport(input = {}) {
     bottomLine: {
       operatingProfit,
       operatingMarginPct: toPct(operatingProfit, netRevenue),
+    },
+    productWatch: {
+      bestMoneyMakers,
+      weakProfitProducts,
+      missingCostProducts,
     },
   };
 }
