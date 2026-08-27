@@ -848,12 +848,12 @@ async function getOwnerIncomeStatementReport(input = {}) {
   });
 
   const bestMoneyMakers = [...productRows]
-    .filter((row) => row.moneyLeft > 0)
+    .filter((row) => row.productCost > 0 && row.moneyLeft > 0)
     .sort((a, b) => b.moneyLeft - a.moneyLeft)
     .slice(0, 5);
 
   const weakProfitProducts = [...productRows]
-    .filter((row) => row.soldWorth > 0 && row.moneyLeft >= 0 && row.moneyLeftPct <= 10)
+    .filter((row) => row.productCost > 0 && row.soldWorth > 0 && row.moneyLeft >= 0 && row.moneyLeftPct <= 10)
     .sort((a, b) => a.moneyLeftPct - b.moneyLeftPct || b.soldWorth - a.soldWorth)
     .slice(0, 5);
 
