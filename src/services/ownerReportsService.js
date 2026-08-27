@@ -761,6 +761,23 @@ async function getOwnerIncomeStatementReport(input = {}) {
     LIMIT 5
   `);
 
+  const operatingExpenseRecordsRes = await db.execute(sql`
+    SELECT
+      e.id::int AS id,
+      COALESCE(e.category, 'GENERAL')::text AS category,
+      COALESCE(e.amount, 0)::bigint AS amount,
+      COALESCE(e.note, '')::text AS note,
+      e.expense_date AS "expenseDate"
+    FROM expenses e
+    WHERE 1 = 1
+      ${locationIdInt ? sql`AND e.location_id = ${locationIdInt}` : sql``}
+      ${fromTs ? sql`AND e.expense_date >= ${fromTs}` : sql``}
+      ${toExclusiveTs ? sql`AND e.expense_date < ${toExclusiveTs}` : sql``}
+      AND UPPER(COALESCE(e.status::text, 'POSTED')) = 'POSTED'
+    ORDER BY e.amount DESC, e.expense_date DESC
+    LIMIT 5
+  `);
+
   const revenue = toMoneyInt(firstRow(revenueRes).total);
   const refunds = toMoneyInt(firstRow(refundsRes).total);
   const extraChargeRevenue = toMoneyInt(firstRow(extraChargeRevenueRes).total);
@@ -774,6 +791,18 @@ async function getOwnerIncomeStatementReport(input = {}) {
     count: Number(row.count || 0),
     total: toMoneyInt(row.total),
   }));
+
+  const expenseRecordRows = Array.isArray(operatingExpenseRecordsRes.rows)
+    ? operatingExpenseRecordsRes.rows
+    : [];
+  const expenseRecords = expenseRecordRows.map((row) => ({
+    id: Number(row.id || 0),
+    category: String(row.category || 'GENERAL'),
+    amount: toMoneyInt(row.amount),
+    note: String(row.note || ''),
+    expenseDate: row.expenseDate || null,
+  }));
+
 
   const netRevenue = revenue - refunds;
   const grossProfit = netRevenue - cogs;
@@ -797,6 +826,7 @@ async function getOwnerIncomeStatementReport(input = {}) {
     operatingExpenses: {
       total: operatingExpenses,
       breakdown: expenseBreakdown,
+      records: expenseRecords,
     },
     bottomLine: {
       operatingProfit,
