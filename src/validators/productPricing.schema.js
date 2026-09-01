@@ -10,6 +10,7 @@ const updateProductPricingSchema = z.object({
   maxDiscountPercent: z.coerce.number().int().min(0).max(100).default(0),
 
   maxDiscountAmount: z.coerce.number().int().min(0).default(0),
+  correctionReason: z.string().trim().min(3).max(500).optional(),
 });
 
 module.exports = { updateProductPricingSchema };

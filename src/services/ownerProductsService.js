@@ -32,6 +32,18 @@ function toInt(value) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+function valuesDifferent(before, after) {
+  return String(before ?? "") !== String(after ?? "");
+}
+
+function addChangedField(changedFields, key, before, after) {
+  if (!valuesDifferent(before, after)) return;
+  changedFields[key] = {
+    before: before ?? null,
+    after: after ?? null,
+  };
+}
+
 function buildUnits(data) {
   const fallbackUnit = normalizeUnit(data.unit || "PIECE");
   const stockUnit = normalizeUnit(data.stockUnit || fallbackUnit);
@@ -682,6 +694,38 @@ async function updateOwnerProduct({ actorUser, productId, data }) {
       updatedAt: new Date(),
     };
 
+    const correctionReason = cleanText(
+      data.correctionReason || data.reason,
+      500,
+    );
+    const changedFields = {};
+
+    addChangedField(changedFields, "locationId", existing.locationId, patch.locationId);
+    addChangedField(changedFields, "name", existing.name, patch.name);
+    addChangedField(changedFields, "displayName", existing.displayName, patch.displayName);
+    addChangedField(changedFields, "category", existing.category, patch.category);
+    addChangedField(changedFields, "subcategory", existing.subcategory, patch.subcategory);
+    addChangedField(changedFields, "sku", existing.sku, patch.sku);
+    addChangedField(changedFields, "barcode", existing.barcode, patch.barcode);
+    addChangedField(changedFields, "supplierSku", existing.supplierSku, patch.supplierSku);
+    addChangedField(changedFields, "brand", existing.brand, patch.brand);
+    addChangedField(changedFields, "model", existing.model, patch.model);
+    addChangedField(changedFields, "size", existing.size, patch.size);
+    addChangedField(changedFields, "color", existing.color, patch.color);
+    addChangedField(changedFields, "material", existing.material, patch.material);
+    addChangedField(changedFields, "variantSummary", existing.variantSummary, patch.variantSummary);
+    addChangedField(changedFields, "unit", existing.unit, patch.unit);
+    addChangedField(changedFields, "stockUnit", existing.stockUnit, patch.stockUnit);
+    addChangedField(changedFields, "salesUnit", existing.salesUnit, patch.salesUnit);
+    addChangedField(changedFields, "purchaseUnit", existing.purchaseUnit, patch.purchaseUnit);
+    addChangedField(changedFields, "purchaseUnitFactor", Number(existing.purchaseUnitFactor ?? 1), patch.purchaseUnitFactor);
+    addChangedField(changedFields, "sellingPrice", Number(existing.sellingPrice ?? 0), patch.sellingPrice);
+    addChangedField(changedFields, "costPrice", Number(existing.costPrice ?? 0), patch.costPrice);
+    addChangedField(changedFields, "maxDiscountPercent", Number(existing.maxDiscountPercent ?? 0), patch.maxDiscountPercent);
+    addChangedField(changedFields, "notes", existing.notes, patch.notes);
+    addChangedField(changedFields, "trackInventory", existing.trackInventory !== false, patch.trackInventory);
+    addChangedField(changedFields, "reorderLevel", Number(existing.reorderLevel ?? 0), patch.reorderLevel);
+
     await tx
       .update(products)
       .set(patch)
@@ -745,6 +789,8 @@ async function updateOwnerProduct({ actorUser, productId, data }) {
       meta: {
         locationId: nextLocationId,
         previousLocationId: existing.locationId,
+        correctionReason: correctionReason || null,
+        changedFields,
       },
       locationId: nextLocationId,
     });
@@ -760,6 +806,7 @@ async function updateOwnerProductPricing({
   purchasePrice,
   sellingPrice,
   maxDiscountPercent,
+  correctionReason,
 }) {
   const parsedProductId = toInt(productId);
   if (!parsedProductId) {
@@ -782,12 +829,27 @@ async function updateOwnerProductPricing({
       throw err;
     }
 
+    const nextPurchasePrice = normalizePositiveInt(purchasePrice, 0);
+    const nextSellingPrice = normalizePositiveInt(sellingPrice, 0);
+    const nextMaxDiscountPercent = normalizePositiveInt(maxDiscountPercent, 0);
+    const safeCorrectionReason = cleanText(correctionReason || "", 500);
+    const changedFields = {};
+
+    addChangedField(changedFields, "costPrice", Number(found.costPrice ?? 0), nextPurchasePrice);
+    addChangedField(changedFields, "sellingPrice", Number(found.sellingPrice ?? 0), nextSellingPrice);
+    addChangedField(
+      changedFields,
+      "maxDiscountPercent",
+      Number(found.maxDiscountPercent ?? 0),
+      nextMaxDiscountPercent,
+    );
+
     await tx
       .update(products)
       .set({
-        costPrice: normalizePositiveInt(purchasePrice, 0),
-        sellingPrice: normalizePositiveInt(sellingPrice, 0),
-        maxDiscountPercent: normalizePositiveInt(maxDiscountPercent, 0),
+        costPrice: nextPurchasePrice,
+        sellingPrice: nextSellingPrice,
+        maxDiscountPercent: nextMaxDiscountPercent,
         updatedAt: new Date(),
       })
       .where(eq(products.id, parsedProductId));
@@ -799,9 +861,18 @@ async function updateOwnerProductPricing({
       entityId: parsedProductId,
       description: `Owner updated pricing for product ${found.displayName || found.name}`,
       meta: {
-        purchasePrice: normalizePositiveInt(purchasePrice, 0),
-        sellingPrice: normalizePositiveInt(sellingPrice, 0),
-        maxDiscountPercent: normalizePositiveInt(maxDiscountPercent, 0),
+        correctionReason: safeCorrectionReason || null,
+        changedFields,
+        previous: {
+          purchasePrice: Number(found.costPrice ?? 0),
+          sellingPrice: Number(found.sellingPrice ?? 0),
+          maxDiscountPercent: Number(found.maxDiscountPercent ?? 0),
+        },
+        next: {
+          purchasePrice: nextPurchasePrice,
+          sellingPrice: nextSellingPrice,
+          maxDiscountPercent: nextMaxDiscountPercent,
+        },
       },
       locationId: found.locationId,
     });

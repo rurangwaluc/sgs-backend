@@ -75,6 +75,7 @@ const updateProductSchema = z.object({
 
   sellingPrice: z.coerce.number().int().min(0).optional(),
   costPrice: z.coerce.number().int().min(0).optional(),
+  correctionReason: z.string().trim().min(3).max(500).optional(),
 
   maxDiscountPercent: z.coerce.number().int().min(0).max(100).optional(),
 
