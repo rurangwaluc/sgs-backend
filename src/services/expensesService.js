@@ -109,6 +109,61 @@ function rowsOf(result) {
   return result?.rows || result || [];
 }
 
+function formatRwf(amount) {
+  return `${Math.max(0, toInt(amount, 0)).toLocaleString()} RWF`;
+}
+
+async function getAvailableExpenseMoneyByMethod(tx, locationId, method) {
+  const safeLocationId = toInt(locationId, null);
+  const safeMethod = normalizeMethod(method);
+
+  if (!safeLocationId) return 0;
+
+  const result = await tx.execute(sql`
+    SELECT
+      COALESCE(
+        SUM(
+          CASE
+            WHEN direction = 'IN' THEN amount
+            WHEN direction = 'OUT' THEN -amount
+            ELSE 0
+          END
+        ),
+        0
+      )::bigint AS balance
+    FROM cash_ledger
+    WHERE location_id = ${safeLocationId}
+      AND method = ${safeMethod}
+  `);
+
+  return Math.max(0, toInt(rowsOf(result)[0]?.balance, 0));
+}
+
+async function ensureEnoughExpenseMoneyByMethod(tx, { locationId, method, amount }) {
+  const safeAmount = toInt(amount, 0);
+  const safeMethod = normalizeMethod(method);
+  const available = await getAvailableExpenseMoneyByMethod(
+    tx,
+    locationId,
+    safeMethod,
+  );
+
+  if (safeAmount > available) {
+    const err = new Error(
+      `Insufficient ${safeMethod} balance. Available: ${formatRwf(
+        available,
+      )}. Requested: ${formatRwf(safeAmount)}.`,
+    );
+    err.code = "INSUFFICIENT_FUNDS";
+    err.availableBalance = available;
+    err.requestedAmount = safeAmount;
+    err.method = safeMethod;
+    throw err;
+  }
+
+  return available;
+}
+
 function normalizeCategory(v) {
   return String(v || "GENERAL")
     .trim()
@@ -380,6 +435,15 @@ async function createExpense({
       allowMissingCashSession: allowMissingCashSession === true,
     });
 
+    const availableBalanceBeforeExpense = await ensureEnoughExpenseMoneyByMethod(
+      tx,
+      {
+        locationId: locId,
+        method: safeMethod,
+        amount: safeAmount,
+      },
+    );
+
     const [created] = await tx
       .insert(expenses)
       .values({
@@ -443,6 +507,11 @@ async function createExpense({
         amount: safeAmount,
         category: safeCategory,
         method: safeMethod,
+        availableBalanceBeforeExpense,
+        availableBalanceAfterExpense: Math.max(
+          0,
+          availableBalanceBeforeExpense - safeAmount,
+        ),
         cashSessionId: resolvedSessionId,
         expenseDate: safeExpenseDate.toISOString(),
         payeeName: safePayeeName,

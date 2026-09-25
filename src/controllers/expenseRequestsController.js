@@ -50,7 +50,7 @@ function mapServiceError(error) {
     return 400;
   }
 
-  if (code === "BAD_STATUS") return 409;
+  if (code === "BAD_STATUS" || code === "INSUFFICIENT_FUNDS") return 409;
 
   return 500;
 }

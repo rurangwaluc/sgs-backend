@@ -66,6 +66,7 @@ function mapCreateError(e) {
   if (e.code === "SESSION_NOT_FOUND") return 404;
   if (e.code === "NO_OPEN_SESSION") return 409;
   if (e.code === "OWNER_DIRECT_EXPENSE") return 400;
+  if (e.code === "INSUFFICIENT_FUNDS") return 409;
 
   if (
     e.code === "BAD_LOCATION" ||
